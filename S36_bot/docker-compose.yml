@@ -22,6 +22,7 @@ services:
       - "7860:7860"
     environment:
       - ORDER_API_URL=http://S36_bot-orders:8000
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://localhost:11434}
     restart: unless-stopped
 
 volumes:
