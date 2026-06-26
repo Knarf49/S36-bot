@@ -1,0 +1,16 @@
+node_modules
+*.xlsx
+rates_all_provinces.json
+df_*.js
+scrape*.js
+test*.js
+v2.js
+v3.js
+calibrate*.js
+make_xlsx*.cjs
+update_intent.js
+Dockerfile
+.dockerignore
+.git
+playwright*
+calculator_logic.md

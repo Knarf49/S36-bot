@@ -1,0 +1,200 @@
+version: "3.1"
+
+nlu:
+- intent: ask_shipping
+  examples: |
+    - ส่งของ
+    - ส่งของไป[เชียงใหม่](province)
+    - ส่งไป[กรุงเทพ](province)
+    - ส่งของไป[ภูเก็ต](province) [5](weight) กิโล
+    - ค่าส่งไป[นครราชสีมา](province)
+    - ส่งของ [10](weight) กิโล ไป[ขอนแก่น](province)
+    - ราคาส่งของไป[หาดใหญ่](province)
+    - เช็คราคาส่งไป[เชียงราย](province)
+    - ส่ง kerry ไป[อุดร](province) [3](weight) โล
+    - ส่ง flash ไป[พัทยา](province)
+    - ส่งของ [2](weight) กก ไป[ลำปาง](province)
+    - ส่งไป[นครศรี](province) [1](weight) กิโลกรัม
+    - คิดค่าส่งให้หน่อย ไป[สุราษฎร์](province)
+    - ไป[ระยอง](province) กี่บาท
+    - [โคราช](province) เท่าไหร่
+    - ส่งของ[ปัตตานี](province) [7](weight) กิโล
+    - ไปรษณีย์ไทยไป[ปากน้ำ](province)
+    - shopee ไป[น่าน](province)
+    - [5](weight) กิโล ไป[ตรัง](province) ราคาเท่าไหร่
+    - ขนส่งถูกสุดไป[สงขลา](province) [3](weight) kg
+    - ไป[กาญจนบุรี](province) [1](weight) kg
+    - [กระบี่](province)
+    - [แม่ฮ่องสอน](province)
+    - [นครสวรรค์](province)
+    - [ลพบุรี](province)
+    - [อุดรธานี](province)
+    - [1.5](weight)
+    - [2.5](weight)
+    - [0.5](weight)
+    - [3.5](weight)
+    - [7.5](weight)
+
+- intent: check_open
+  examples: |
+    - เปิดมั้ย
+    - ตอนนี้เปิดอยู่ไหม
+    - ร้านเปิดยัง
+    - เช็คเวลาเปิดหน่อย
+    - ยังเปิดอยู่มั้ย
+    - ปิดรึยัง
+    - ปิดหรือยัง
+    - ตอนนี้ร้านเปิดป่ะ
+    - เปิดร้านอยู่มั้ย
+    - ร้านเปิดไหม
+    - ร้านเปิดป่ะ
+    - เปิดป่ะ
+
+- intent: ask_schedule
+  examples: |
+    - เปิดกี่โมง
+    - ร้านเปิดวันไหนบ้าง
+    - เวลาเปิดปิด
+    - ปิดกี่โมง
+    - เปิดปิดวันไหน
+    - วันอาทิตย์เปิดมั้ย
+    - เวลาทำการ
+    - เสาร์เปิดไหม
+    - วันธรรมดาเปิดกี่โมง
+    - ร้านหยุดวันไหนบ้าง
+    - ร้านปิดวันอะไร
+
+- intent: greet
+  examples: |
+    - สวัสดี
+    - หวัดดี
+    - ดีครับ
+    - hello
+    - สวัสดีครับ
+    - ว่าไง
+
+- intent: goodbye
+  examples: |
+    - ขอบคุณ
+    - ขอบใจ
+    - bye
+    - ขอบคุณครับ
+    - ลาก่อน
+    - แล้วเจอกัน
+
+- intent: out_of_scope
+  examples: |
+    - asdfghjkl
+    - xyz
+    - 12345
+    - ddd
+    - อากาศวันนี้
+    - อยากกินข้าว
+    - หนังเรื่องอะไรดี
+    - รถติดมาก
+    - พรุ่งนี้ฝนตกไหม
+
+- intent: order_followup
+  examples: |
+    - kerry
+    - flash
+    - ไปรษณีย์
+    - shopee
+    - dhl
+    - bulky
+    - เคอรี่
+    - แฟลช
+    - ไปรษณีย์ไทย
+    - ช้อปปี้
+    - ชอปปี้
+    - บัลกี้
+    - เอา kerry
+    - เอา flash
+    - ขอไปรษณีย์
+    - ส่ง kerry
+    - เลือก shopee
+    - ใช้ dhl
+    - [kerry](courier) [สมชาย](sender_name) [0812345678](sender_phone) [123/4](sender_address)
+    - [flash](courier) [วศุฐา](sender_name) [0841234567](sender_phone) [กรุงเทพ](sender_address)
+    - [ไปรษณีย์](courier) [มานี](sender_name) [0898765432](sender_phone)
+    - [shopee](courier) [0912345678](sender_phone)
+    - [สมชาย](sender_name) [0812345678](sender_phone) [123/4 บางกะปิ กรุงเทพ](sender_address)
+    - [วศุฐา](sender_name) [0841112233](sender_phone) [ลาดพร้าว](sender_address)
+    - [0898765432](sender_phone)
+    - [0981234567](receiver_phone)
+    - [มานี](receiver_name) [0876543210](receiver_phone)
+    - [0811112233](sender_phone) [ซอยสุขุมวิท 55](sender_address)
+    - [เคอรี่](courier) [สมศักดิ์](sender_name) [0855551234](sender_phone)
+    - [แฟลช](courier) [0892223344](sender_phone) [บางนา](sender_address)
+
+- intent: check_order_status
+  examples: |
+    - ของถึงยัง
+    - ของส่งยัง
+    - เช็คสถานะ
+    - เช็คของ
+    - ตามของหน่อย
+    - ถึงรึยัง
+    - ส่งถึงยัง
+    - tracking
+    - [KERRY260625163045](order_id)
+    - [POST260625150000](order_id)
+    - [FLASH260625120000](order_id)
+    - [SHOPEE260625100000](order_id)
+    - [DHL260625090000](order_id)
+    - [BULKY260625080000](order_id)
+    - ของถึงยัง [KERRY260625163045](order_id)
+    - ถึงยัง [KERRY260625163045](order_id)
+    - เช็ค [POST260625150000](order_id)
+    - เช็คของ [KERRY260625163045](order_id)
+    - เช็คสถานะ [FLASH260625120000](order_id)
+    - ตามของ [DHL260625090000](order_id)
+    - check [DHL260625090000](order_id)
+    - tracking [SHOPEE260625100000](order_id)
+    - [KERRY260625163045](order_id) ของถึงยัง
+    - [FLASH260625120000](order_id) ส่งถึงยัง
+    - [POST260625150000](order_id) ถึงยัง
+    - [BULKY260625080000](order_id) ถึงรึยัง
+    - [DHL260625090000](order_id) เช็คหน่อย
+    - [SHOPEE260625100000](order_id) ถึงหรือยัง
+    - [0812345678](sender_phone) ส่งของยัง
+    - ของ [0898765432](sender_phone)
+    - เช็คจากเบอร์ [0841234567](sender_phone)
+    - ตามของเบอร์ [0812345678](sender_phone)
+    - [0852223456](sender_phone) ของถึงยัง
+
+- regex: sender_phone
+  examples: |
+    - \b0\d{8,9}\b
+
+- regex: receiver_phone
+  examples: |
+    - \b0\d{8,9}\b
+
+- regex: order_id
+  examples: |
+    - \b(KERRY|POST|FLASH|SHOPEE|DHL|BULKY)\d{12}\b
+
+- regex: province
+  examples: |
+    - (กรุงเทพมหานคร|กระบี่|กาญจนบุรี|กาฬสินธุ์|กำแพงเพชร|ขอนแก่น|จันทบุรี|ฉะเชิงเทรา|ชลบุรี|ชัยนาท|ชัยภูมิ|ชุมพร|เชียงราย|เชียงใหม่|ตรัง|ตราด|ตาก|นครนายก|นครปฐม|นครพนม|นครราชสีมา|นครศรีธรรมราช|นครสวรรค์|นนทบุรี|นราธิวาส|น่าน|บึงกาฬ|บุรีรัมย์|ปทุมธานี|ประจวบคีรีขันธ์|ปราจีนบุรี|ปัตตานี|พะเยา|พังงา|พัทลุง|พิจิตร|พิษณุโลก|เพชรบุรี|เพชรบูรณ์|แพร่|ภูเก็ต|มหาสารคาม|มุกดาหาร|แม่ฮ่องสอน|ยโสธร|ยะลา|ร้อยเอ็ด|ระนอง|ระยอง|ราชบุรี|ลพบุรี|ลำปาง|ลำพูน|เลย|ศรีสะเกษ|สกลนคร|สงขลา|สตูล|สมุทรปราการ|สมุทรสงคราม|สมุทรสาคร|สระแก้ว|สระบุรี|สิงห์บุรี|สุโขทัย|สุพรรณบุรี|สุราษฎร์ธานี|สุรินทร์|หนองคาย|หนองบัวลำภู|อ่างทอง|อุดรธานี|อุตรดิตถ์|อุทัยธานี|อุบลราชธานี|อำนาจเจริญ)
+
+- regex: weight
+  examples: |
+    - (\d+(?:\.\d+)?)
+
+- lookup: courier
+  examples: |
+    - kerry
+    - flash
+    - shopee
+    - dhl
+    - bulky
+    - เคอรี่
+    - แฟลช
+    - ไปรษณีย์
+    - ไปรษณีย์ไทย
+    - ช้อปปี้
+    - ชอปปี้
+    - บัลกี้
+    - post

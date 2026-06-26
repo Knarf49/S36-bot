@@ -1,0 +1,22 @@
+{
+  "name": "20scrape",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@google-cloud/dialogflow": "^7.6.2",
+    "@google-cloud/dialogflow-cx": "^5.8.2",
+    "@line/bot-sdk": "^11.0.2",
+    "dialogflow-fulfillment": "^0.5.0",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "playwright": "^1.61.0"
+  }
+}

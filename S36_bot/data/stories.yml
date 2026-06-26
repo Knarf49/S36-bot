@@ -1,0 +1,108 @@
+version: "3.1"
+
+stories:
+
+- story: ask shipping with all info
+  steps:
+  - intent: ask_shipping
+  - action: action_calculate_shipping
+
+- story: ask shipping missing province
+  steps:
+  - intent: ask_shipping
+    entities:
+    - weight: "5"
+  - action: action_calculate_shipping
+
+- story: ask shipping missing weight
+  steps:
+  - intent: ask_shipping
+    entities:
+    - province: "เชียงใหม่"
+  - action: action_calculate_shipping
+
+- story: ask shipping no info
+  steps:
+  - intent: ask_shipping
+  - action: action_calculate_shipping
+
+- story: shipping order full flow
+  steps:
+  - intent: ask_shipping
+    entities:
+    - province: "เชียงใหม่"
+    - weight: "5"
+  - action: action_calculate_shipping
+  - intent: order_followup
+    entities:
+    - courier: "kerry"
+  - action: action_order_followup
+  - intent: order_followup
+    entities:
+    - sender_name: "สมชาย"
+    - sender_phone: "0812345678"
+  - action: action_order_followup
+  - intent: order_followup
+    entities:
+    - receiver_name: "มานี"
+    - receiver_phone: "0891234567"
+  - action: action_order_followup
+
+- story: shipping order one shot
+  steps:
+  - intent: ask_shipping
+    entities:
+    - province: "ภูเก็ต"
+    - weight: "3"
+  - action: action_calculate_shipping
+  - intent: order_followup
+    entities:
+    - courier: "kerry"
+    - sender_name: "สมชาย"
+    - sender_phone: "0812345678"
+    - sender_address: "123/4 บางกะปิ กรุงเทพ"
+  - action: action_order_followup
+  - intent: order_followup
+    entities:
+    - receiver_name: "มานี"
+    - receiver_phone: "0898765432"
+  - action: action_order_followup
+
+- story: check order status by order id
+  steps:
+  - intent: check_order_status
+    entities:
+    - order_id: "KERRY260625163045"
+  - action: action_check_order_status
+
+- story: check order status by phone
+  steps:
+  - intent: check_order_status
+    entities:
+    - sender_phone: "0812345678"
+  - action: action_check_order_status
+
+- story: check order status no id
+  steps:
+  - intent: check_order_status
+  - action: action_check_order_status
+
+- story: check open
+  steps:
+  - intent: check_open
+  - action: action_check_open
+
+- story: ask schedule
+  steps:
+  - intent: ask_schedule
+  - action: action_tell_schedule
+
+- story: greet
+  steps:
+  - intent: greet
+  - action: utter_greet
+
+- story: goodbye
+  steps:
+  - intent: goodbye
+  - action: utter_goodbye

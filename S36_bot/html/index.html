@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chatbot - ส่งของ</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; background: #f0f2f5; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+.chat-container { width: 100%; max-width: 500px; height: 100vh; max-height: 800px; display: flex; flex-direction: column; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,0.1); overflow: hidden; }
+.chat-header { background: #2563eb; color: #fff; padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; font-size: 16px; font-weight: 600; }
+.chat-header small { font-size: 11px; opacity: 0.8; font-weight: 400; }
+
+.chat-messages { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+.message { max-width: 85%; padding: 10px 14px; border-radius: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; font-size: 14px; }
+.message.user { align-self: flex-end; background: #2563eb; color: #fff; border-bottom-right-radius: 4px; }
+.message.bot { align-self: flex-start; background: #e5e7eb; color: #111; border-bottom-left-radius: 4px; }
+.message.typing { align-self: flex-start; background: #e5e7eb; color: #888; font-style: italic; }
+.message.tool { align-self: flex-start; background: #fef3c7; color: #92400e; font-size: 12px; border-radius: 8px; padding: 6px 10px; margin: 2px 0; }
+.chat-input { display: flex; padding: 12px; gap: 8px; border-top: 1px solid #e5e7eb; background: #fff; }
+.chat-input input { flex: 1; padding: 10px 14px; border: 1px solid #d1d5db; border-radius: 24px; outline: none; font-size: 15px; }
+.chat-input input:focus { border-color: #2563eb; }
+.chat-input button { background: #2563eb; color: #fff; border: none; border-radius: 50%; width: 44px; height: 44px; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+.chat-input button:hover { background: #1d4ed8; }
+.chat-input button:disabled { opacity: 0.5; cursor: not-allowed; }
+.quick-actions { display: flex; gap: 6px; padding: 0 12px 8px; flex-wrap: wrap; }
+.quick-actions button { background: #e5e7eb; border: 1px solid #d1d5db; border-radius: 16px; padding: 6px 12px; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.quick-actions button:hover { background: #d1d5db; }
+@media (max-width: 500px) {
+  .chat-container { max-height: 100vh; border-radius: 0; }
+}
+</style>
+</head>
+<body>
+<div class="chat-container">
+  <div class="chat-header">
+    <div>
+      🚚 Bot ส่งของ
+      <small>ถามราคา · เช็คเวลา · ติดตามพัสดุ</small>
+    </div>
+  </div>
+  <div class="chat-messages" id="messages">
+    <div class="message bot">
+      สวัสดีครับ!<br>
+      ถามค่าส่ง เช็คเวลาเปิดร้าน หรือเช็คสถานะพัสดุได้เลยครับ
+    </div>
+  </div>
+  <div class="quick-actions" id="quickActions">
+    <button onclick="sendQuick('ส่งของไปเชียงใหม่ 5 กิโล')">📦 ค่าส่ง</button>
+    <button onclick="sendQuick('ร้านเปิดมั้ย')">🕐 เช็คเวลา</button>
+    <button onclick="sendQuick('เช็คสถานะ 0812345678')">📋 สถานะพัสดุ</button>
+    <button onclick="sendQuick('จ-ศ เปิดกี่โมง')">📅 ตารางเวลา</button>
+  </div>
+  <div class="chat-input">
+    <input type="text" id="input" placeholder="พิมพ์ข้อความ..." onkeypress="if(event.key==='Enter') send()">
+    <button onclick="send()" id="sendBtn">➤</button>
+  </div>
+</div>
+
+<script>
+const msgDiv = document.getElementById('messages');
+const input = document.getElementById('input');
+const sendBtn = document.getElementById('sendBtn');
+
+function addMessage(text, type) {
+  const div = document.createElement('div');
+  div.className = 'message ' + type;
+  div.innerHTML = text;
+  msgDiv.appendChild(div);
+  msgDiv.scrollTop = msgDiv.scrollHeight;
+  return div;
+}
+
+function addTyping() {
+  const div = document.createElement('div');
+  div.className = 'message typing';
+  div.id = 'typing';
+  div.textContent = 'กำลังคิด...';
+  msgDiv.appendChild(div);
+  msgDiv.scrollTop = msgDiv.scrollHeight;
+  return div;
+}
+
+function removeTyping() {
+  const el = document.getElementById('typing');
+  if (el) el.remove();
+}
+
+function sendQuick(text) {
+  input.value = text;
+  send();
+}
+
+async function send() {
+  const text = input.value.trim();
+  if (!text) return;
+  addMessage(text, 'user');
+  input.value = '';
+  sendBtn.disabled = true;
+
+  await sendRasa(text);
+
+  sendBtn.disabled = false;
+  input.focus();
+}
+
+async function sendRasa(text) {
+  addTyping();
+  const sender = 'user-' + Math.random().toString(36).slice(2,8);
+  const body = JSON.stringify({ sender, message: text });
+
+  for (let i = 0; i < 3; i++) {
+    try {
+      const res = await fetch('/api/webhooks/rest/webhook', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body
+      });
+      if (res.ok) {
+        const data = await res.json();
+        removeTyping();
+        data.forEach(r => addMessage(r.text, 'bot'));
+        return;
+      }
+    } catch(e) {}
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  removeTyping();
+  addMessage('เชื่อมต่อ Rasa ไม่ได้ — ลองโหมด Gemma4 แทนนะครับ', 'bot');
+}
+
+input.focus();
+</script>
+</body>
+</html>

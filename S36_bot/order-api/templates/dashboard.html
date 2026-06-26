@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S36 - Dashboard</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: system-ui, sans-serif; background: #f0f2f5; }
+nav { background: #fff; padding: 0.75rem 1.5rem; display: flex; justify-content: space-between; align-items: center; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+nav h1 { font-size: 1.25rem; }
+nav a { color: #dc2626; text-decoration: none; font-weight: 600; }
+.container { max-width: 1400px; margin: 1.5rem auto; padding: 0 1rem; }
+.pagination { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem; padding: 0.5rem 0.75rem; background: #fff; border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); font-size: 0.85rem; }
+.pagination select { padding: 0.2rem 0.3rem; border: 1px solid #ddd; border-radius: 4px; font-size: 0.85rem; }
+.pagination button { padding: 0.25rem 0.75rem; border: 1px solid #d1d5db; border-radius: 4px; background: #fff; cursor: pointer; font-size: 0.85rem; }
+.pagination button:hover { background: #f3f4f6; }
+.pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
+.pagination .page-info { color: #6b7280; }
+table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+th, td { padding: 0.4rem 0.5rem; text-align: left; border-bottom: 1px solid #eee; font-size: 0.85rem; }
+th { background: #f8fafc; font-weight: 600; color: #475569; }
+tr:hover { background: #f8fafc; }
+.status-badge { display: inline-block; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; font-weight: 600; }
+.status-pending { background: #fef3c7; color: #92400e; }
+.status-notsent { background: #dbeafe; color: #1e40af; }
+.status-shipping { background: #e0e7ff; color: #3730a3; }
+.status-delivered { background: #d1fae5; color: #065f46; }
+.status-unknown { background: #f1f5f9; color: #64748b; }
+.editable { cursor: pointer; min-width: 40px; }
+.editable:hover { background: #e5e7eb; border-radius: 3px; }
+.editable input, .editable select { width: 100%; padding: 0.15rem 0.3rem; border: 1px solid #2563eb; border-radius: 3px; font-size: 0.8rem; }
+.btn-save { background: #2563eb; color: #fff; padding: 0.2rem 0.5rem; border: none; border-radius: 4px; cursor: pointer; font-size: 0.75rem; font-weight: 600; }
+.btn-save:hover { background: #1d4ed8; }
+.loading { text-align: center; padding: 2rem; color: #666; }
+.empty { text-align: center; padding: 3rem; color: #999; }
+</style>
+</head>
+<body>
+<nav>
+  <h1>S36 | รายการส่งของ</h1>
+  <span>{{ username }} | <a href="/logout">ออกจากระบบ</a></span>
+</nav>
+<div class="container">
+  <div class="pagination" id="pagination">
+    <div>
+      แสดง <select id="pageSize" onchange="changePageSize()">
+        <option value="10">10</option>
+        <option value="20" selected>20</option>
+        <option value="50">50</option>
+        <option value="0">ทั้งหมด</option>
+      </select> รายการ
+      &nbsp; สถานะ <select id="statusFilter" onchange="changeFilter()">
+        <option value="">ทั้งหมด</option>
+        <option value="กำลังกรอกข้อมูลลงระบบ">กำลังกรอกข้อมูลลงระบบ</option>
+        <option value="ยังไม่ส่ง">ยังไม่ส่ง</option>
+        <option value="กำลังจัดส่ง">กำลังจัดส่ง</option>
+        <option value="ส่งถึงแล้ว">ส่งถึงแล้ว</option>
+      </select>
+    </div>
+    <div>
+      <button id="btnPrev" onclick="goPage(-1)">◀ ก่อนหน้า</button>
+      <span class="page-info" id="pageInfo">หน้า 1</span>
+      <button id="btnNext" onclick="goPage(1)">ถัดไป ▶</button>
+    </div>
+    <div id="totalInfo" class="page-info">0 รายการ</div>
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>ออเดอร์</th>
+        <th>ผู้ส่ง</th>
+        <th>เบอร์ผู้ส่ง</th>
+        <th>ที่อยู่รับ</th>
+        <th>ผู้รับ</th>
+        <th>เบอร์ผู้รับ</th>
+        <th>ปลายทาง</th>
+        <th>Kg</th>
+        <th>ขนส่ง</th>
+        <th>ราคา</th>
+        <th>Tracking</th>
+        <th>สถานะ</th>
+      </tr>
+    </thead>
+    <tbody id="orderBody">
+      <tr><td colspan="12" class="loading">กำลังโหลด...</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<script>
+const STATUS_OPTIONS = ['กำลังกรอกข้อมูลลงระบบ', 'ยังไม่ส่ง', 'กำลังจัดส่ง', 'ส่งถึงแล้ว'];
+let currentPage = 1;
+let pageSize = 20;
+let statusFilter = '';
+let totalOrders = 0;
+
+function statusClass(s) {
+  if (s === 'กำลังกรอกข้อมูลลงระบบ') return 'status-pending';
+  if (s === 'ยังไม่ส่ง') return 'status-notsent';
+  if (s === 'กำลังจัดส่ง') return 'status-shipping';
+  if (s === 'ส่งถึงแล้ว') return 'status-delivered';
+  return 'status-unknown';
+}
+
+function makeEditable(value, field, orderId, isSelect) {
+  if (isSelect) {
+    const sel = STATUS_OPTIONS.map(s =>
+      `<option value="${s}" ${s === value ? 'selected' : ''}>${s}</option>`
+    ).join('');
+    return `<select class="edit-input" data-field="${field}" data-id="${orderId}">${sel}</select>`;
+  }
+  return `<input class="edit-input" data-field="${field}" data-id="${orderId}" value="${escapeHtml(value || '')}" size="${Math.max(value?.length || 4, 4)}">`;
+}
+
+function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+function startEdit(el, field, orderId, isSelect) {
+  if (el.querySelector('.edit-input')) return;
+  const val = el.dataset.value || el.textContent;
+  el.innerHTML = makeEditable(val, field, orderId, isSelect);
+  const input = el.querySelector('.edit-input');
+  input.focus();
+  input.addEventListener('blur', () => saveEdit(el, orderId));
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveEdit(el, orderId); });
+}
+
+async function saveEdit(el, orderId) {
+  const inputs = el.parentElement.querySelectorAll('.edit-input');
+  const body = {};
+  inputs.forEach(inp => {
+    const field = inp.dataset.field;
+    let val = inp.value;
+    if (field === 'weight_kg' || field === 'price') val = parseFloat(val);
+    body[field] = val;
+  });
+
+  const res = await fetch(`/api/orders/${orderId}`, {
+    method: 'PATCH',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)
+  });
+  if (res.ok) {
+    const o = await res.json();
+    rebuildRow(el.closest('tr'), o);
+  }
+}
+
+function rebuildRow(tr, o) {
+  tr.innerHTML = `
+    <td><code>${o.id}</code></td>
+    <td class="editable" data-value="${escapeHtml(o.customer_name||'')}" onclick="startEdit(this,'customer_name','${o.id}')">${escapeHtml(o.customer_name||'-')}</td>
+    <td class="editable" data-value="${escapeHtml(o.customer_phone||'')}" onclick="startEdit(this,'customer_phone','${o.id}')">${escapeHtml(o.customer_phone||'-')}</td>
+    <td class="editable" data-value="${escapeHtml(o.pickup_address||'')}" onclick="startEdit(this,'pickup_address','${o.id}')">${escapeHtml(o.pickup_address||'-')}</td>
+    <td class="editable" data-value="${escapeHtml(o.receiver_name||'')}" onclick="startEdit(this,'receiver_name','${o.id}')">${escapeHtml(o.receiver_name||'-')}</td>
+    <td class="editable" data-value="${escapeHtml(o.receiver_phone||'')}" onclick="startEdit(this,'receiver_phone','${o.id}')">${escapeHtml(o.receiver_phone||'-')}</td>
+    <td class="editable" data-value="${escapeHtml(o.delivery_province||'')}" onclick="startEdit(this,'delivery_province','${o.id}')">${escapeHtml(o.delivery_province||'-')}</td>
+    <td class="editable" data-value="${o.weight_kg||0}" onclick="startEdit(this,'weight_kg','${o.id}')">${o.weight_kg||0}</td>
+    <td class="editable" data-value="${escapeHtml(o.courier_name||'')}" onclick="startEdit(this,'courier_name','${o.id}')">${escapeHtml(o.courier_name||'-')}</td>
+    <td class="editable" data-value="${o.price||0}" onclick="startEdit(this,'price','${o.id}')">${o.price||0}</td>
+    <td class="editable" data-value="${escapeHtml(o.tracking_number||'')}" onclick="startEdit(this,'tracking_number','${o.id}')">${escapeHtml(o.tracking_number||'-')}</td>
+    <td class="editable" data-value="${o.status}" onclick="startEdit(this,'status','${o.id}',true)">
+      <span class="status-badge ${statusClass(o.status)}">${o.status}</span>
+    </td>
+  `;
+}
+
+function updatePaginationUI() {
+  const totalPages = pageSize > 0 ? Math.ceil(totalOrders / pageSize) : 1;
+  document.getElementById('btnPrev').disabled = currentPage <= 1;
+  document.getElementById('btnNext').disabled = currentPage >= totalPages;
+  document.getElementById('pageInfo').textContent = pageSize > 0 ? `หน้า ${currentPage} / ${totalPages}` : `ทั้งหมด`;
+  document.getElementById('totalInfo').textContent = `${totalOrders} รายการ`;
+}
+
+function changePageSize() {
+  pageSize = parseInt(document.getElementById('pageSize').value);
+  currentPage = 1;
+  loadOrders();
+}
+
+function changeFilter() {
+  statusFilter = document.getElementById('statusFilter').value;
+  currentPage = 1;
+  loadOrders();
+}
+
+function goPage(delta) {
+  currentPage += delta;
+  loadOrders();
+}
+
+async function loadOrders() {
+  try {
+    const [ordersRes, countRes] = await Promise.all([
+      fetch(`/api/orders?limit=${pageSize}&offset=${(currentPage - 1) * pageSize}&status=${encodeURIComponent(statusFilter)}`),
+      fetch(`/api/orders/count?status=${encodeURIComponent(statusFilter)}`)
+    ]);
+    if (!ordersRes.ok) { window.location = '/login'; return; }
+    const orders = await ordersRes.json();
+    if (countRes.ok) {
+      totalOrders = (await countRes.json()).total;
+      if (pageSize === 0) currentPage = 1;
+    }
+
+    const tbody = document.getElementById('orderBody');
+    if (orders.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="12" class="empty">ยังไม่มีออเดอร์</td></tr>';
+    } else {
+      tbody.innerHTML = '';
+      orders.forEach(o => {
+        const tr = document.createElement('tr');
+        rebuildRow(tr, o);
+        tbody.appendChild(tr);
+      });
+    }
+    updatePaginationUI();
+  } catch(e) {
+    document.getElementById('orderBody').innerHTML = '<tr><td colspan="12" class="loading">โหลดไม่สำเร็จ</td></tr>';
+  }
+}
+
+loadOrders();
+setInterval(loadOrders, 30000);
+</script>
+</body>
+</html>

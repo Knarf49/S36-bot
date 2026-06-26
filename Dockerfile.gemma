@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir gradio==5.45.0
+
+COPY tools_agent.py .
+COPY gemma_gradio.py .
+
+ENV TZ=Asia/Bangkok
+ENV OLLAMA_HOST=http://host.docker.internal:11434
+
+EXPOSE 7860
+
+CMD ["python", "gemma_gradio.py"]

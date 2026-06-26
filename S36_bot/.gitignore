@@ -1,0 +1,9 @@
+venv/
+__pycache__/
+.rasa/cache/
+models/
+results/
+*.tar.gz
+*.pyc
+.env
+test_*.txt

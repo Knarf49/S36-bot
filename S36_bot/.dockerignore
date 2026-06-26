@@ -1,0 +1,8 @@
+venv
+__pycache__
+.rasa/cache
+*.pyc
+results
+test_results.txt
+start.bat
+train.bat

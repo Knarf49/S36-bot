@@ -1,0 +1,110 @@
+version: "3.1"
+
+session_config:
+  session_expiration_time: 60
+  carry_over_slots_to_new_session: true
+
+intents:
+- ask_shipping
+- check_open
+- ask_schedule
+- greet
+- goodbye
+- out_of_scope
+- order_followup
+- check_order_status
+
+entities:
+- province
+- weight
+- courier
+- sender_phone
+- receiver_phone
+- order_id
+
+slots:
+  province:
+    type: text
+    influence_conversation: true
+    mappings:
+    - type: from_entity
+      entity: province
+  weight:
+    type: text
+    influence_conversation: true
+    mappings:
+    - type: from_entity
+      entity: weight
+  courier:
+    type: text
+    influence_conversation: true
+    mappings:
+    - type: from_entity
+      entity: courier
+  sender_phone:
+    type: text
+    influence_conversation: true
+    mappings: []
+  receiver_phone:
+    type: text
+    influence_conversation: true
+    mappings: []
+  order_id:
+    type: text
+    influence_conversation: true
+    mappings:
+    - type: from_entity
+      entity: order_id
+  order_stage:
+    type: text
+    influence_conversation: true
+    mappings: []
+  sender_name:
+    type: text
+    influence_conversation: true
+    mappings: []
+  sender_address:
+    type: text
+    influence_conversation: true
+    mappings: []
+  receiver_name:
+    type: text
+    influence_conversation: true
+    mappings: []
+  last_courier:
+    type: text
+    influence_conversation: true
+    mappings: []
+  last_price:
+    type: text
+    influence_conversation: true
+    mappings: []
+
+responses:
+  utter_greet:
+  - text: "สวัสดีครับ มีอะไรให้ช่วยครับ"
+
+  utter_goodbye:
+  - text: "ยินดีครับ"
+
+  utter_fallback:
+  - text: "ขอโทษครับ ไม่เข้าใจคำถาม ลองถามเรื่องส่งของ, เช็คเวลาเปิด หรือ ตารางเวลาเปิดร้านได้นะครับ"
+
+  utter_ask_courier:
+  - text: "อยากได้ขนส่งไหนครับ? (Kerry / Flash / ไปรษณีย์ / Shopee / DHL / Bulky)"
+
+  utter_ask_sender:
+  - text: "รบกวนแจ้งข้อมูลผู้ส่ง: ชื่อ-เบอร์โทร-ที่อยู่รับของครับ\nตัวอย่าง: สมชาย 0812345678 123/4 บางกะปิ กรุงเทพ"
+
+  utter_ask_receiver:
+  - text: "รบกวนแจ้งชื่อ-เบอร์โทรผู้รับครับ\nตัวอย่าง: มานี 0891234567"
+
+  utter_send_status_shipping:
+  - text: "อยากทราบค่าส่งปลายทางก่อนนะครับ ลองถามว่า \"ส่งของไป [จังหวัด] [น้ำหนัก] กิโล\" ครับ"
+
+actions:
+- action_calculate_shipping
+- action_check_open
+- action_tell_schedule
+- action_order_followup
+- action_check_order_status

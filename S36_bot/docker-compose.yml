@@ -1,0 +1,28 @@
+name: S36_bot
+services:
+  order-api:
+    build: ./order-api
+    container_name: S36_bot-orders
+    ports:
+      - "8000:8000"
+    environment:
+      - TZ=Asia/Bangkok
+      - JWT_SECRET=${JWT_SECRET:-s36-order-api-dev-only}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-2658_xtrail}
+    volumes:
+      - order-data:/app/data
+    restart: unless-stopped
+
+  gemma-ui:
+    build:
+      context: ..
+      dockerfile: Dockerfile.gemma
+    container_name: gemma-ui
+    ports:
+      - "7860:7860"
+    environment:
+      - ORDER_API_URL=http://S36_bot-orders:8000
+    restart: unless-stopped
+
+volumes:
+  order-data:
