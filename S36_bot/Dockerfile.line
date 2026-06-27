@@ -8,7 +8,7 @@ RUN pip install --no-cache-dir flask line-bot-sdk pillow qrcode[pil]
 
 COPY tools_agent.py .
 COPY S36_bot/line_bot.py .
-COPY S36_bot/promptpay_logo.jpg .
+COPY promptpay_logo.jpg Thai_QR_Payment_Logo.png Mitr-Regular.ttf ./
 
 ENV TZ=Asia/Bangkok
 

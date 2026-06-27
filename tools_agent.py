@@ -511,7 +511,7 @@ def generate_promptpay_qr_base64(phone, amount):
     merchant_info = _tlv("00", "A000000677010111") + _tlv("01", phone_num)
     payload = (
         _tlv("00", "01")
-        + _tlv("01", "11")
+        + _tlv("01", "12" if amount else "11")
         + _tlv("29", merchant_info)
         + _tlv("53", "764")
     )
@@ -533,7 +533,7 @@ def generate_promptpay_qr_base64(phone, amount):
 
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
         box_size=10,
         border=2,
     )
@@ -541,70 +541,89 @@ def generate_promptpay_qr_base64(phone, amount):
     qr.make(fit=True)
     qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
 
-    W, H = 500, 600
+    W, H = (500, 760) if amount else (500, 730)
     canvas = Image.new("RGB", (W, H), "white")
     draw = ImageDraw.Draw(canvas)
 
     try:
-        font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
-        font_label = ImageFont.truetype("DejaVuSans.ttf", 18)
-        font_amount = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
-        font_footer = ImageFont.truetype("DejaVuSans.ttf", 12)
+        font_18 = ImageFont.truetype("Mitr-Regular.ttf", 18)
+        font_24 = ImageFont.truetype("Mitr-Regular.ttf", 24)
     except Exception:
-        font_title = ImageFont.load_default()
-        font_label = ImageFont.load_default()
-        font_amount = ImageFont.load_default()
-        font_footer = ImageFont.load_default()
+        try:
+            font_18 = ImageFont.truetype("DejaVuSans.ttf", 18)
+            font_24 = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
+        except Exception:
+            font_18 = ImageFont.load_default()
+            font_24 = ImageFont.load_default()
 
-    draw.rounded_rectangle(
-        [10, 10, W - 10, H - 10],
-        radius=16, outline="#E0E0E0", width=1, fill="#FAFAFA",
-    )
+    # Card background
+    draw.rectangle([10, 10, W - 10, H - 10], outline="#E0E0E0", width=1, fill="#FFFFFF")
 
-    logo_y = 30
+    # Thai QR Payment logo with full-width navy banner
+    thai_qr_y = 20
+    try:
+        thai_qr_img = Image.open("Thai_QR_Payment_Logo.png").convert("RGBA")
+        thai_qr_max_w = 250
+        thai_qr_scale = min(1.0, thai_qr_max_w / thai_qr_img.width)
+        thai_qr_w = int(thai_qr_img.width * thai_qr_scale)
+        thai_qr_h = int(thai_qr_img.height * thai_qr_scale)
+        thai_qr_x = (W - thai_qr_w) // 2
+        thai_qr_img = thai_qr_img.resize((thai_qr_w, thai_qr_h), Image.LANCZOS)
+    except Exception:
+        thai_qr_w, thai_qr_h = 250, 99
+        thai_qr_x = (W - thai_qr_w) // 2
+        thai_qr_img = None
+
+    banner_bottom = thai_qr_y + thai_qr_h + 8
+    draw.rectangle([10, 10, W - 10, banner_bottom], fill="#0E3D67")
+
+    if thai_qr_img:
+        canvas.paste(thai_qr_img, (thai_qr_x, thai_qr_y), thai_qr_img)
+
+    # PromptPay logo (12px gap from banner)
+    logo_y = banner_bottom + 12
     try:
         logo_img = Image.open("promptpay_logo.jpg").convert("RGB")
-        logo_img = logo_img.resize((220, 44), Image.LANCZOS)
-        logo_x = (W - 220) // 2
+        logo_max_w = 250
+        logo_scale = min(1.0, logo_max_w / logo_img.width)
+        logo_w = int(logo_img.width * logo_scale)
+        logo_h = int(logo_img.height * logo_scale)
+        logo_x = (W - logo_w) // 2
+        logo_img = logo_img.resize((logo_w, logo_h), Image.LANCZOS)
         canvas.paste(logo_img, (logo_x, logo_y))
     except Exception:
-        logo_w, logo_h = 220, 44
-        logo_x = (W - logo_w) // 2
-        draw.rounded_rectangle(
-            [logo_x, logo_y, logo_x + logo_w, logo_y + logo_h],
-            radius=8, fill="#00529B",
-        )
-        logo_text = "PromptPay"
-        tb = draw.textbbox((0, 0), logo_text, font=font_title)
-        lw = tb[2] - tb[0]
-        draw.text((logo_x + (logo_w - lw) // 2, logo_y + 6), logo_text, fill="white", font=font_title)
+        logo_h = 44
 
+    # QR code (16px gap from logo)
     qr_size = 250
     qr_resized = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
     qr_x = (W - qr_size) // 2
-    qr_y = 110
+    qr_y = logo_y + logo_h + 16
     canvas.paste(qr_resized, (qr_x, qr_y))
 
-    qr_bottom = qr_y + qr_size
-    info_y = qr_bottom + 25
+    # Text labels: amount → footer → phone
+    text_y = qr_y + qr_size + 32
+    line_y = text_y
+
+    if amount:
+        amt_text = f"{amount:,.2f} บาท"
+        tb = draw.textbbox((0, 0), amt_text, font=font_24)
+        tw = tb[2] - tb[0]
+        draw.text(((W - tw) // 2, line_y), amt_text, fill="#333333", font=font_24)
+        line_y += 30
+
+    footer = "S36 Post Shop"
+    tb = draw.textbbox((0, 0), footer, font=font_18)
+    tw = tb[2] - tb[0]
+    draw.text(((W - tw) // 2, line_y), footer, fill="#0074D9", font=font_18)
+    line_y += 26
 
     pp_id_text = display_phone
     if len(display_phone) == 10 and display_phone.startswith('0'):
         pp_id_text = f"{display_phone[:3]}-{display_phone[3:6]}-{display_phone[6:]}"
-    tb = draw.textbbox((0, 0), pp_id_text, font=font_label)
+    tb = draw.textbbox((0, 0), pp_id_text, font=font_18)
     tw = tb[2] - tb[0]
-    draw.text(((W - tw) // 2, info_y), pp_id_text, fill="#333333", font=font_label)
-
-    if amount:
-        amt_text = f"{amount:,.2f} บาท"
-        tb2 = draw.textbbox((0, 0), amt_text, font=font_amount)
-        aw = tb2[2] - tb2[0]
-        draw.text(((W - aw) // 2, info_y + 30), amt_text, fill="#333333", font=font_amount)
-
-    footer = "สร้าง QR รับเงินด้วย S36 PromptPay"
-    tb3 = draw.textbbox((0, 0), footer, font=font_footer)
-    fw = tb3[2] - tb3[0]
-    draw.text(((W - fw) // 2, H - 40), footer, fill="#A6A6A6", font=font_footer)
+    draw.text(((W - tw) // 2, line_y), pp_id_text, fill="#333333", font=font_18)
 
     buf = io.BytesIO()
     canvas.save(buf, format="PNG")
