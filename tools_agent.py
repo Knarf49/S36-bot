@@ -1338,14 +1338,15 @@ def call_ollama(messages, stream=False):
         "messages": messages,
         "tools": TOOLS,
         "stream": stream,
+        "keep_alive": "30m",
         "options": {"num_ctx": NUM_CTX},
     }
     data = json.dumps(body).encode('utf-8')
     req = urllib.request.Request(OLLAMA_URL, data=data, method='POST')
     req.add_header('Content-Type', 'application/json')
     if stream:
-        return urllib.request.urlopen(req, timeout=120)
-    with urllib.request.urlopen(req, timeout=120) as resp:
+        return urllib.request.urlopen(req, timeout=300)
+    with urllib.request.urlopen(req, timeout=300) as resp:
         return json.loads(resp.read())
 
 def run_tool_loop(messages, user_id=None):
