@@ -22,6 +22,7 @@ PROMPTPAY_PHONE = os.getenv("PROMPTPAY_PHONE", "")
 RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "")
 MODEL = "gemma4:e4b"
 NUM_CTX = 32000
+TEST_MODE = os.getenv("TEST_MODE", "").lower() in ("1", "true", "yes")
 
 _pending_slip_base64 = None
 _qr_generated_at = None
@@ -37,6 +38,10 @@ def get_pending_slip():
     v = _pending_slip_base64
     _pending_slip_base64 = None
     return v
+
+
+def peek_pending_slip():
+    return _pending_slip_base64
 
 
 def set_qr_generated_at(dt):
@@ -1075,7 +1080,7 @@ def execute_tool(tool_call):
             "courier_code": args.get("courier_code", ""),
             "courier_name": args.get("courier_name", ""),
             "price": float(args.get("price", 0)),
-            "slip_image_base64": args.get("slip_image_base64", ""),
+            "slip_image_base64": get_pending_slip() or args.get("slip_image_base64", ""),
             "slip_ocr_amount": float(args.get("slip_ocr_amount", 0)),
             "slip_ocr_confidence": float(args.get("slip_ocr_confidence", 0)),
             "slip_ocr_raw": args.get("slip_ocr_raw", ""),
@@ -1128,12 +1133,19 @@ def execute_tool(tool_call):
     elif name == 'verify_slip':
         image_b64 = args.get('image_base64', '')
         if not image_b64 or len(image_b64) < 100 or image_b64.startswith('['):
-            image_b64 = get_pending_slip()
+            image_b64 = peek_pending_slip()
         expected = float(args.get('expected_amount', 0))
         if not image_b64:
             return "ไม่พบรูปสลิปที่ส่งมา"
         if expected <= 0:
             return "ไม่พบยอดเงินที่คาดหวัง"
+
+        if TEST_MODE:
+            return (
+                f"VERIFIED_OK\n"
+                f"ยอดที่ตรวจพบ: {expected:.2f} บาท (คาดหวัง {expected:.2f} บาท) [TEST MODE]\n"
+                f"SLIP_OCR_AMOUNT:{expected}|SLIP_OCR_CONFIDENCE:1.0|SLIP_OCR_RAW:test_mode|SLIP_TRANSFER_DATETIME:"
+            )
 
         result = ocr_slip(image_b64)
         if result.get('error'):

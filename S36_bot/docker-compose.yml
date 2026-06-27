@@ -26,6 +26,7 @@ services:
       - PROMPTPAY_PHONE=${PROMPTPAY_PHONE}
       - TYPHOON_API_KEY=${TYPHOON_API_KEY}
       - RECIPIENT_NAME=${RECIPIENT_NAME}
+      - TEST_MODE=${TEST_MODE:-0}
     restart: unless-stopped
 
 volumes:
