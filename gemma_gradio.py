@@ -81,6 +81,7 @@ def stream_ollama(messages, tools=None):
     if tools is None:
         tools = TOOLS
     first = True
+    called = set()
     for iteration in range(5):
         if first:
             yield ("thinking", None)
@@ -129,14 +130,20 @@ def stream_ollama(messages, tools=None):
             return
 
         if full_tool_calls:
+            new_tcs = [tc for tc in full_tool_calls if tc['function']['name'] not in called]
+            if not new_tcs:
+                messages.append({"role": "assistant", "content": full_content or "ดำเนินการเสร็จสิ้นค่ะ"})
+                yield ("done", None)
+                return
+            called.update(tc['function']['name'] for tc in new_tcs)
             assistant_msg = {
                 "role": "assistant",
                 "content": full_content,
-                "tool_calls": full_tool_calls,
+                "tool_calls": new_tcs,
             }
             messages.append(assistant_msg)
 
-            for tc in full_tool_calls:
+            for tc in new_tcs:
                 tool_name = tc['function']['name']
                 info = TOOL_INFO_MAP.get(tool_name, 'กำลังดำเนินการ...')
                 yield ("tool", info)
@@ -222,7 +229,7 @@ def chat_fn(message, history, request: gr.Request | None = None):
                 sess.selected_courier = picked  # re-pick
 
         state_block = build_state_block(sess)
-        print(f"[STATE] stage={sess.stage.name} courier={sess.selected_courier} prices={list(sess.quoted_prices.keys())}")
+        print(f"[STATE] stage={sess.stage.name} courier={sess.selected_courier} prices={list(sess.quoted_prices.keys())} sender={sess.sender} receiver={sess.receiver} addr={sess.sender_addr}")
         messages[0] = {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + state_block}
         allowed = STAGE_TOOLS.get(sess.stage, None)
         gated_tools = [t for t in TOOLS if t["function"]["name"] in allowed] if allowed is not None else TOOLS
@@ -230,12 +237,15 @@ def chat_fn(message, history, request: gr.Request | None = None):
         # Force QR generation when info provided in COLLECT_INFO (8B tool-call gap)
         parse_info_fields(user_content or "", sess)
         if needs_qr(sess):
+            print(f"[FORCE-QR] Firing! stage={sess.stage} courier={sess.selected_courier}")
             price = sess.quoted_prices[sess.selected_courier]
             result = execute_tool({"function": {"name": "generate_promptpay_qr", "arguments": {"amount": price}}})
+            print(f"[FORCE-QR] result has QR_CODE={'QR_CODE:' in result}")
             if "QR_CODE:" in result:
                 b64 = result.split("QR_CODE:")[1].split("|")[0].strip()
                 sess.stage = Stage.AWAIT_PAYMENT
                 _log_conv(None, f"QR_CODE generated ({price} THB)")
+                yield f"สแกนเพื่อชำระเงิน {price:.0f} บาท"
                 yield f'<div style="text-align:center;margin:10px 0;"><img src="data:image/png;base64,{b64}" alt="PromptPay QR" style="max-width:280px;border-radius:8px;border:2px solid #e5e7eb;"/><br><small>สแกนเพื่อชำระเงิน {price:.0f} บาท</small></div>'
                 return
 

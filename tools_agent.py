@@ -1364,6 +1364,7 @@ def run_tool_loop(messages, user_id=None, sess=None):
             tools = [t for t in TOOLS if t["function"]["name"] in allowed]
         state_block = build_state_block(sess)
 
+    called = set()
     for _ in range(5):
         if state_block:
             if messages[0]["role"] == "system":
@@ -1371,8 +1372,14 @@ def run_tool_loop(messages, user_id=None, sess=None):
         resp = call_ollama(messages, stream=False, tools=tools)
         msg = resp['choices'][0]['message']
         if msg.get('tool_calls'):
+            new_tcs = [tc for tc in msg['tool_calls'] if tc['function']['name'] not in called]
+            if not new_tcs:
+                messages.append({"role": "assistant", "content": msg.get("content", "") or "ดำเนินการเสร็จสิ้นค่ะ"})
+                return messages
+            called.update(tc['function']['name'] for tc in new_tcs)
+            msg['tool_calls'] = new_tcs
             messages.append(msg)
-            for tc in msg['tool_calls']:
+            for tc in new_tcs:
                 tool_result = execute_tool(tc, user_id)
                 messages.append({
                     "role": "tool",

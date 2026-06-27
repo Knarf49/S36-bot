@@ -171,7 +171,7 @@ def handle_image(event):
     msgs.append({"role": "user", "content": "ผู้ใช้ส่งสลิปการโอนเงินมาให้ตรวจสอบ"})
 
     try:
-        msgs = run_tool_loop(msgs, user_id)
+        msgs = run_tool_loop(msgs, user_id, get_session(user_id))
     except Exception as e:
         line_api.reply_message(event.reply_token, TextSendMessage(text="เกิดข้อผิดพลาด กรุณาลองใหม่ภายหลังค่ะ"))
         return

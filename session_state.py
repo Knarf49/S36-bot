@@ -68,8 +68,11 @@ class Session:
     quoted_prices: dict = field(default_factory=dict)
     selected_courier: str | None = None
     last_query: dict | None = None
-    sender: dict = field(default_factory=dict)
-    receiver: dict = field(default_factory=dict)
+    sender: str | None = None
+    sender_phone: str | None = None
+    sender_addr: str | None = None
+    receiver: str | None = None
+    receiver_phone: str | None = None
     qr_amount: float | None = None
 
 
@@ -84,8 +87,8 @@ def get_session(user_id: str) -> Session:
 
 STAGE_TOOLS = {
     Stage.IDLE: ["shipping_fee_calculator", "check_schedule", "get_shipping_status"],
-    Stage.AWAIT_PICK: [],        # no tools — just acknowledge courier choice
-    Stage.COLLECT_INFO: ["generate_promptpay_qr"],
+    Stage.AWAIT_PICK: ["shipping_fee_calculator"],  # allow re-quote for route changes
+    Stage.COLLECT_INFO: ["generate_promptpay_qr", "shipping_fee_calculator"],
     Stage.AWAIT_PAYMENT: ["verify_slip", "create_shipping_order"],
     Stage.AWAIT_ADMIN: [],
 }
@@ -136,18 +139,26 @@ _STAGE_DIRECTIVES = {
 
 
 def needs_qr(sess) -> bool:
-    return sess.stage == Stage.COLLECT_INFO and sess.selected_courier and sess.quoted_prices
+    if sess.stage != Stage.COLLECT_INFO:
+        return False
+    if not sess.selected_courier or sess.selected_courier not in sess.quoted_prices:
+        return False
+    return bool(sess.sender and sess.receiver and sess.sender_addr)
 
 
 def parse_info_fields(text: str, sess) -> bool:
-    """Extract sender/receiver info from user text. Return True if all 5 fields now set."""
-    m = re.search(r'ผู้ส่ง[:\s]*(\S+)', text)
+    m = re.search(r'ผู้ส่ง[:\s]+(\S+)', text)
     if m:
         sess.sender = m.group(1)
-    m = re.search(r'0[689]\d{1,3}[\s-]*\d{3,4}[\s-]*\d{3,4}', text)
-    if m:
-        sess.sender_phone = m.group(0)
-    m = re.search(r'ผู้รับ[:\s]*(\S+)', text)
+    m = re.search(r'ผู้รับ[:\s]+(\S+)', text)
     if m:
         sess.receiver = m.group(1)
-    return sess.sender is not None and sess.receiver is not None
+    m = re.search(r'ที่อยู่[:\s]+([^\n,]+)', text)
+    if m:
+        sess.sender_addr = m.group(1).strip()
+    phones = re.findall(r'0[689]\d{1,3}[\s-]*\d{3,4}[\s-]*\d{3,4}', text)
+    if phones:
+        sess.sender_phone = phones[0]
+        if len(phones) > 1:
+            sess.receiver_phone = phones[1]
+    return bool(sess.sender and sess.receiver and sess.sender_addr)
