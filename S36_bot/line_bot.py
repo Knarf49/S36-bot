@@ -15,7 +15,7 @@ from tools_agent import (
     execute_tool, set_pending_slip, get_pending_slip,
     call_ollama, run_tool_loop,
 )
-from session_state import get_session, detect_courier, build_state_block, Stage
+from session_state import get_session, detect_courier, build_state_block, Stage, advance_if_prices
 
 app = Flask(__name__)
 
@@ -86,15 +86,8 @@ def handle_text(event):
         line_api.reply_message(event.reply_token, TextSendMessage(text="เกิดข้อผิดพลาด กรุณาลองใหม่ภายหลังค่ะ"))
         return
 
-    # After tools ran: detect if shipping_fee_calculator was called → advance to AWAIT_PICK
-    if sess.stage == Stage.IDLE:
-        for m in msgs:
-            content = m.get("content", "")
-            if "shipping_fee_calculator" in str(m.get("tool_calls", "")) or \
-               ("courier_code" in content and "cost" in content):
-                sess.stage = Stage.AWAIT_PICK
-                print(f"[STATE] user={user_id} prices shown, advanced to AWAIT_PICK")
-                break
+    # Advance stage based on tool results in messages
+    advance_if_prices(sess, msgs)
 
     # After QR generated: advance to AWAIT_PAYMENT
     for m in msgs:

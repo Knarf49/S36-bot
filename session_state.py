@@ -18,10 +18,10 @@ class Stage(Enum):
 COURIER_PATTERNS = [
     (r'\bkerry\b|\bเคอรี่\b|\bเคอรี\b', 'DPKERRY'),
     (r'\bshopee\b|\bช้อปปี้\b|\bชอปปี้\b', 'DPSHOPEE'),
-    (r'\bflash\b|\bแฟลช\b|\bแฟลต\b|\bเฟลช\b', 'DPFLASHA'),
-    (r'\bไปรษณีย์\b|\bไปรษณี\b|\bไปรษณีย์ไทย\b|ไทยโพส', 'DPTHAIPOST'),
     (r'\bdhl\b|\bดีเอชแอล\b', 'DPDHL'),
     (r'\bflash\s*[\.-]?\s*bulky\b|\bbulky\b|\bบัลค์\b|\bบัลกี้\b', 'DPFLASHLIVEBULKY'),
+    (r'\bflash\b|\bแฟลช\b|\bแฟลต\b|\bเฟลช\b', 'DPFLASHA'),
+    (r'\bไปรษณีย์\b|\bไปรษณี\b|\bไปรษณีย์ไทย\b|ไทยโพส', 'DPTHAIPOST'),
 ]
 
 
@@ -31,6 +31,35 @@ def detect_courier(text: str) -> str | None:
         if re.search(pattern, text_lower):
             return code
     return None
+
+
+def parse_prices(text: str) -> dict | None:
+    m = re.search(r'__PRICES:(.+?)__', text)
+    if not m:
+        return None
+    prices = {}
+    for pair in m.group(1).split(','):
+        if '=' in pair:
+            code, price = pair.split('=', 1)
+            try:
+                prices[code] = float(price)
+            except ValueError:
+                pass
+    return prices if prices else None
+
+
+def advance_if_prices(sess, messages):
+    if sess.stage != Stage.IDLE:
+        return
+    for m in messages:
+        if isinstance(m, dict):
+            c = m.get('content', '')
+            if '__PRICES:' in c:
+                prices = parse_prices(c)
+                if prices:
+                    sess.quoted_prices = prices
+                    sess.stage = Stage.AWAIT_PICK
+                    return
 
 
 @dataclass
@@ -55,25 +84,30 @@ def get_session(user_id: str) -> Session:
 
 STAGE_TOOLS = {
     Stage.IDLE: ["shipping_fee_calculator", "check_schedule", "get_shipping_status"],
-    Stage.AWAIT_PICK: [],
+    Stage.AWAIT_PICK: [],        # no tools — just acknowledge courier choice
     Stage.COLLECT_INFO: ["generate_promptpay_qr"],
     Stage.AWAIT_PAYMENT: ["verify_slip", "create_shipping_order"],
     Stage.AWAIT_ADMIN: [],
 }
 
+# Sentinel for "all tools" — None means unrestricted
+ALL_TOOLS_SENTINEL = None
+
 
 def build_state_block(sess: Session) -> str:
-    lines = ["# สถานะปัจจุบัน"]
-    lines.append(f"- ขั้นตอน: {sess.stage.name}")
+    lines = ["# CURRENT STATE"]
+    lines.append(f"- Stage: {sess.stage.name}")
     if sess.selected_courier and sess.quoted_prices:
         price = sess.quoted_prices.get(sess.selected_courier, "?")
-        lines.append(f"- ผู้ใช้เลือกขนส่ง: {sess.selected_courier} ราคา {price} บาท")
+        lines.append(f"- User has selected courier: {sess.selected_courier}, price {price} THB")
+        lines.append("- DO NOT ask the user to pick a courier again. Proceed to collect sender/receiver info.")
     elif sess.selected_courier:
-        lines.append(f"- ผู้ใช้เลือกขนส่ง: {sess.selected_courier}")
+        lines.append(f"- User has selected courier: {sess.selected_courier}")
+        lines.append("- DO NOT ask the user to pick a courier again.")
     if sess.sender:
-        lines.append(f"- ผู้ส่ง: {sess.sender}")
+        lines.append(f"- Sender: {sess.sender}")
     if sess.receiver:
-        lines.append(f"- ผู้รับ: {sess.receiver}")
+        lines.append(f"- Receiver: {sess.receiver}")
     if sess.last_query:
-        lines.append(f"- รายการล่าสุด: {sess.last_query}")
+        lines.append(f"- Last query: {sess.last_query}")
     return "\n".join(lines)

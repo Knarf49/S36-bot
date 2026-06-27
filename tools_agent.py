@@ -1148,13 +1148,16 @@ def execute_tool(tool_call, user_id=None):
                                        l if dims_provided else None,
                                        h if dims_provided else None)
         lines = [f"ค่าส่งไป{province} {weight_kg} kg:"]
+        prices = {}
         for r in results:
             if r['rejected']:
                 lines.append(f"  - {r['courier_name']}: ❌ {r['reason']}")
             else:
                 mark = '' if r.get('exact') else ' (ประมาณ)'
                 lines.append(f"  - {r['courier_name']}: {r['price']} บาท{mark}")
-        return '\n'.join(lines)
+                prices[r['courier_code']] = r['price']
+        price_entries = ",".join(f"{c}={p}" for c,p in prices.items())
+        return '\n'.join(lines) + f"\n__PRICES:{price_entries}__"
     elif name == 'check_schedule':
         open_now, day_name, ts, rng = is_open()
         close_str = f"{rng['close']:02d}:00"
@@ -1357,9 +1360,9 @@ def run_tool_loop(messages, user_id=None, sess=None):
     tools = TOOLS
     if sess is not None:
         from session_state import STAGE_TOOLS, build_state_block
-        tools = [t for t in TOOLS if t["function"]["name"] in STAGE_TOOLS.get(sess.stage, [])]
-        if not tools:
-            tools = TOOLS  # fallback: empty list means all tools
+        allowed = STAGE_TOOLS.get(sess.stage, None)
+        if allowed is not None:
+            tools = [t for t in TOOLS if t["function"]["name"] in allowed]
         state_block = build_state_block(sess)
 
     for _ in range(5):

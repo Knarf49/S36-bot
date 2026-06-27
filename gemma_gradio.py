@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tools_agent import (
     SYSTEM_PROMPT, MODEL, TOOLS, NUM_CTX, execute_tool, set_pending_slip,
 )
-from session_state import get_session, detect_courier, build_state_block, Stage, STAGE_TOOLS
+from session_state import get_session, detect_courier, build_state_block, Stage, STAGE_TOOLS, advance_if_prices
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_NATIVE = f"{OLLAMA_HOST}/api/chat"
@@ -210,24 +210,19 @@ def chat_fn(message, history, request: gr.Request | None = None):
 
         # State machine: detect courier choice, gate tools, inject state block
         sess = get_session(str(request.session_hash) if request and hasattr(request, 'session_hash') else 'gradio_default')
-        picked = detect_courier(user_content) if user_content else None
+        # Detect courier + advance stage based on tool results
+        picked = detect_courier(user_content or "")
         if picked and sess.stage == Stage.AWAIT_PICK:
             sess.selected_courier = picked
             sess.stage = Stage.COLLECT_INFO
 
-        # Detect if shipping_fee_calculator was called → advance to AWAIT_PICK
-        if sess.stage == Stage.IDLE:
-            for m in messages:
-                c = m.get("content", "")
-                if "courier_code" in c and "cost" in c:
-                    sess.stage = Stage.AWAIT_PICK
-                    break
+        advance_if_prices(sess, messages)
 
         state_block = build_state_block(sess)
         print(f"[STATE] stage={sess.stage.name} courier={sess.selected_courier} prices={list(sess.quoted_prices.keys())}")
         messages[0] = {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + state_block}
-        stage_tool_names = STAGE_TOOLS.get(sess.stage, [])
-        gated_tools = [t for t in TOOLS if t["function"]["name"] in stage_tool_names] if stage_tool_names else TOOLS
+        allowed = STAGE_TOOLS.get(sess.stage, None)
+        gated_tools = [t for t in TOOLS if t["function"]["name"] in allowed] if allowed is not None else TOOLS
 
         response = ""
         tool_msgs = []
