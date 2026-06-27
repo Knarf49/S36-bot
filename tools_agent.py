@@ -1332,11 +1332,13 @@ SYSTEM_PROMPT = (
     "CRITICAL: After getting tool result, respond in Thai. Never call same tool twice."
 )
 
-def call_ollama(messages, stream=False):
+def call_ollama(messages, stream=False, tools=None):
+    if tools is None:
+        tools = TOOLS
     body = {
         "model": MODEL,
         "messages": messages,
-        "tools": TOOLS,
+        "tools": tools,
         "stream": stream,
         "keep_alive": "30m",
         "options": {"num_ctx": NUM_CTX, "flash_attention": True},
@@ -1349,10 +1351,22 @@ def call_ollama(messages, stream=False):
     with urllib.request.urlopen(req, timeout=300) as resp:
         return json.loads(resp.read())
 
-def run_tool_loop(messages, user_id=None):
+def run_tool_loop(messages, user_id=None, sess=None):
     """Run non-streaming tool-call loop. Returns updated messages."""
+    state_block = ""
+    tools = TOOLS
+    if sess is not None:
+        from session_state import STAGE_TOOLS, build_state_block
+        tools = [t for t in TOOLS if t["function"]["name"] in STAGE_TOOLS.get(sess.stage, [])]
+        if not tools:
+            tools = TOOLS  # fallback: empty list means all tools
+        state_block = build_state_block(sess)
+
     for _ in range(5):
-        resp = call_ollama(messages, stream=False)
+        if state_block:
+            if messages[0]["role"] == "system":
+                messages[0]["content"] = SYSTEM_PROMPT + "\n\n" + state_block
+        resp = call_ollama(messages, stream=False, tools=tools)
         msg = resp['choices'][0]['message']
         if msg.get('tool_calls'):
             messages.append(msg)

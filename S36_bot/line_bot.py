@@ -15,6 +15,7 @@ from tools_agent import (
     execute_tool, set_pending_slip, get_pending_slip,
     call_ollama, run_tool_loop,
 )
+from session_state import get_session, detect_courier, build_state_block, Stage
 
 app = Flask(__name__)
 
@@ -62,18 +63,46 @@ def handle_text(event):
     user_id = event.source.user_id
     text = event.message.text
     print(f"[TEXT] user={user_id} text={text}")
+
+    sess = get_session(user_id)
+
+    # Courier detection: if user types a courier name, Python captures it
+    picked = detect_courier(text)
+    if picked and sess.stage == Stage.AWAIT_PICK:
+        sess.selected_courier = picked
+        sess.stage = Stage.COLLECT_INFO
+        print(f"[STATE] user={user_id} picked courier={picked}, advanced to COLLECT_INFO")
+
     msgs = get_convo(user_id)
     msgs.append({"role": "user", "content": text})
 
     try:
-        print(f"[BOT] calling run_tool_loop...")
-        msgs = run_tool_loop(msgs, user_id)
+        print(f"[BOT] calling run_tool_loop (stage={sess.stage.name})...")
+        msgs = run_tool_loop(msgs, user_id, sess)
         print(f"[BOT] run_tool_loop done, {len(msgs)} messages")
     except Exception as e:
         print(f"[ERROR] run_tool_loop failed: {e}")
         import traceback; traceback.print_exc()
         line_api.reply_message(event.reply_token, TextSendMessage(text="เกิดข้อผิดพลาด กรุณาลองใหม่ภายหลังค่ะ"))
         return
+
+    # After tools ran: detect if shipping_fee_calculator was called → advance to AWAIT_PICK
+    if sess.stage == Stage.IDLE:
+        for m in msgs:
+            content = m.get("content", "")
+            if "shipping_fee_calculator" in str(m.get("tool_calls", "")) or \
+               ("courier_code" in content and "cost" in content):
+                sess.stage = Stage.AWAIT_PICK
+                print(f"[STATE] user={user_id} prices shown, advanced to AWAIT_PICK")
+                break
+
+    # After QR generated: advance to AWAIT_PAYMENT
+    for m in msgs:
+        content = m.get("content", "")
+        if "QR_CODE:" in content:
+            sess.stage = Stage.AWAIT_PAYMENT
+            print(f"[STATE] user={user_id} QR generated, advanced to AWAIT_PAYMENT")
+            break
 
     conversations[user_id] = msgs
 
