@@ -6,8 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends tzdata libzbar0
 
 RUN pip install --no-cache-dir gradio==5.45.0 qrcode[pil] Pillow pyzbar
 
-COPY tools_agent.py .
+COPY tools_agent.py session_state.py .
 COPY gemma_gradio.py .
+COPY promptpay_logo.jpg Thai_QR_Payment_Logo.png Mitr-Regular.ttf ./
 
 ENV TZ=Asia/Bangkok
 ENV OLLAMA_HOST=http://localhost:11434

@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tools_agent import (
     SYSTEM_PROMPT, MODEL, TOOLS, NUM_CTX, execute_tool, set_pending_slip,
 )
+from session_state import get_session, detect_courier, build_state_block, Stage, STAGE_TOOLS
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_NATIVE = f"{OLLAMA_HOST}/api/chat"
@@ -76,7 +77,9 @@ def _clean_html(text):
     return _HTML_RE.sub('', text)
 
 
-def stream_ollama(messages):
+def stream_ollama(messages, tools=None):
+    if tools is None:
+        tools = TOOLS
     first = True
     for iteration in range(5):
         if first:
@@ -86,7 +89,7 @@ def stream_ollama(messages):
         body = json.dumps({
             "model": MODEL,
             "messages": messages,
-            "tools": TOOLS,
+            "tools": tools,
             "stream": True,
             "options": {"num_ctx": NUM_CTX, "temperature": 0},
         }).encode('utf-8')
@@ -162,7 +165,7 @@ def stream_ollama(messages):
     yield ("done", None)
 
 
-def chat_fn(message, history):
+def chat_fn(message, history, request: gr.Request | None = None):
     try:
         messages = [{"role": "system", "content": SYSTEM_PROMPT}]
         for h in history:
@@ -205,10 +208,31 @@ def chat_fn(message, history):
             messages.append({"role": "user", "content": user_content})
             _log_conv(user_content, None)
 
+        # State machine: detect courier choice, gate tools, inject state block
+        sess = get_session(str(request.session_hash) if request and hasattr(request, 'session_hash') else 'gradio_default')
+        picked = detect_courier(user_content) if user_content else None
+        if picked and sess.stage == Stage.AWAIT_PICK:
+            sess.selected_courier = picked
+            sess.stage = Stage.COLLECT_INFO
+
+        # Detect if shipping_fee_calculator was called → advance to AWAIT_PICK
+        if sess.stage == Stage.IDLE:
+            for m in messages:
+                c = m.get("content", "")
+                if "courier_code" in c and "cost" in c:
+                    sess.stage = Stage.AWAIT_PICK
+                    break
+
+        state_block = build_state_block(sess)
+        print(f"[STATE] stage={sess.stage.name} courier={sess.selected_courier} prices={list(sess.quoted_prices.keys())}")
+        messages[0] = {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + state_block}
+        stage_tool_names = STAGE_TOOLS.get(sess.stage, [])
+        gated_tools = [t for t in TOOLS if t["function"]["name"] in stage_tool_names] if stage_tool_names else TOOLS
+
         response = ""
         tool_msgs = []
         qr_base64 = None
-        for status, data in stream_ollama(messages):
+        for status, data in stream_ollama(messages, gated_tools):
             if status == "token":
                 if tool_msgs:
                     tool_msgs = []
@@ -235,6 +259,7 @@ def chat_fn(message, history):
         _log_conv(None, response or ('\n'.join(tool_msgs) if tool_msgs else ''))
 
         if qr_base64:
+            sess.stage = Stage.AWAIT_PAYMENT
             if response:
                 yield response
             yield f'<div style="text-align:center;margin:10px 0;"><img src="data:image/png;base64,{qr_base64}" alt="PromptPay QR" style="max-width:280px;border-radius:8px;border:2px solid #e5e7eb;"/><br><small>สแกนเพื่อชำระเงิน</small></div>'
