@@ -21,7 +21,7 @@ DASHBOARD_URL = os.getenv("ORDER_API_URL", "http://localhost:8000")
 PROMPTPAY_PHONE = os.getenv("PROMPTPAY_PHONE", "")
 RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "")
 MODEL = "gemma4:e4b"
-NUM_CTX = 4096
+NUM_CTX = 12288
 TEST_MODE = os.getenv("TEST_MODE", "").lower() in ("1", "true", "yes")
 
 _pending_slip_base64 = None  # global default (backward compat, gemma_gradio.py)
