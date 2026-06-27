@@ -12,6 +12,8 @@ rate_summary.csv
 rate_table.csv
 scraped_elements.json
 page_screenshot.png
+qr_*.png
+screenshot_test.png
 *.log
 __pycache__/
 *.pyc

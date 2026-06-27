@@ -51,7 +51,7 @@ def callback():
 
 @app.route("/qr/<user_id>.png")
 def serve_qr(user_id):
-    b64 = qr_cache.pop(user_id, None)
+    b64 = qr_cache.get(user_id)
     if not b64:
         return "QR not found", 404
     return send_file(io.BytesIO(base64.b64decode(b64)), mimetype="image/png")
@@ -61,37 +61,50 @@ def serve_qr(user_id):
 def handle_text(event):
     user_id = event.source.user_id
     text = event.message.text
+    print(f"[TEXT] user={user_id} text={text}")
     msgs = get_convo(user_id)
     msgs.append({"role": "user", "content": text})
 
     try:
+        print(f"[BOT] calling run_tool_loop...")
         msgs = run_tool_loop(msgs, user_id)
+        print(f"[BOT] run_tool_loop done, {len(msgs)} messages")
     except Exception as e:
+        print(f"[ERROR] run_tool_loop failed: {e}")
+        import traceback; traceback.print_exc()
         line_api.reply_message(event.reply_token, TextSendMessage(text="เกิดข้อผิดพลาด กรุณาลองใหม่ภายหลังค่ะ"))
         return
 
     conversations[user_id] = msgs
+
+    qr_data = None
+    for m in reversed(msgs):
+        c = m.get("content", "")
+        if "QR_CODE:" in c:
+            m2 = _re.search(r"QR_CODE:([A-Za-z0-9+/=]+)", c)
+            if m2:
+                qr_data = m2.group(1)
+                break
+
     last = msgs[-1]
     reply_text = last.get("content", "")
-    if not reply_text:
+    print(f"[BOT] reply_text ({len(reply_text)} chars): {reply_text[:100]}")
+    if not reply_text and not qr_data:
+        print(f"[BOT] empty reply - not sending")
         return
 
-    if "QR_CODE:" in reply_text:
-        import re as _re
-        m = _re.search(r"QR_CODE:([A-Za-z0-9+/=]+)", reply_text)
-        if m:
-            qr_b64 = m.group(1)
-            qr_cache[user_id] = qr_b64
-            qr_url = f"https://{NGROK_DOMAIN}/qr/{user_id}.png"
-            clean_text = reply_text.split("QR_CODE:")[0].strip()
-            line_api.reply_message(
-                event.reply_token,
-                [
-                    TextSendMessage(text=clean_text or "สแกนเพื่อชำระเงิน"),
-                    ImageSendMessage(original_content_url=qr_url, preview_image_url=qr_url),
-                ],
-            )
-            return
+    if qr_data:
+        qr_cache[user_id] = qr_data
+        qr_url = f"https://{NGROK_DOMAIN}/qr/{user_id}.png"
+        clean_text = reply_text.replace(f"QR_CODE:{qr_data}", "").replace(f"|AMOUNT:", " ").strip()
+        line_api.reply_message(
+            event.reply_token,
+            [
+                TextSendMessage(text=clean_text or "สแกนเพื่อชำระเงิน"),
+                ImageSendMessage(original_content_url=qr_url, preview_image_url=qr_url),
+            ],
+        )
+        return
 
     line_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
@@ -126,6 +139,7 @@ def handle_image(event):
     last = msgs[-1]
     reply_text = last.get("content", "")
     if reply_text:
+        print(f"[BOT] sending reply to user={user_id}")
         line_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
 

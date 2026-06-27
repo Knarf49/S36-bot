@@ -504,6 +504,7 @@ def generate_promptpay_qr_base64(phone, amount):
     if not phone:
         return None, "PROMPTPAY_PHONE ไม่ได้ตั้งค่า"
     phone_num = phone.replace('-', '').replace(' ', '')
+    display_phone = phone_num
     if phone_num.startswith('0'):
         phone_num = f"0066{phone_num[1:]}"
 
@@ -526,21 +527,87 @@ def generate_promptpay_qr_base64(phone, amount):
 
     try:
         import qrcode
-        from PIL import Image
+        from PIL import Image, ImageDraw, ImageFont
     except ImportError:
         return None, "qrcode/Pillow not installed"
 
     qr = qrcode.QRCode(
         version=None,
-        error_correction=qrcode.constants.ERROR_CORRECT_M,
-        box_size=8,
+        error_correction=qrcode.constants.ERROR_CORRECT_L,
+        box_size=10,
         border=2,
     )
     qr.add_data(payload)
     qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
+    qr_img = qr.make_image(fill_color="black", back_color="white").convert("RGB")
+
+    W, H = 500, 600
+    canvas = Image.new("RGB", (W, H), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    try:
+        font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
+        font_label = ImageFont.truetype("DejaVuSans.ttf", 18)
+        font_amount = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
+        font_footer = ImageFont.truetype("DejaVuSans.ttf", 12)
+    except Exception:
+        font_title = ImageFont.load_default()
+        font_label = ImageFont.load_default()
+        font_amount = ImageFont.load_default()
+        font_footer = ImageFont.load_default()
+
+    draw.rounded_rectangle(
+        [10, 10, W - 10, H - 10],
+        radius=16, outline="#E0E0E0", width=1, fill="#FAFAFA",
+    )
+
+    logo_y = 30
+    try:
+        logo_img = Image.open("promptpay_logo.jpg").convert("RGB")
+        logo_img = logo_img.resize((220, 44), Image.LANCZOS)
+        logo_x = (W - 220) // 2
+        canvas.paste(logo_img, (logo_x, logo_y))
+    except Exception:
+        logo_w, logo_h = 220, 44
+        logo_x = (W - logo_w) // 2
+        draw.rounded_rectangle(
+            [logo_x, logo_y, logo_x + logo_w, logo_y + logo_h],
+            radius=8, fill="#00529B",
+        )
+        logo_text = "PromptPay"
+        tb = draw.textbbox((0, 0), logo_text, font=font_title)
+        lw = tb[2] - tb[0]
+        draw.text((logo_x + (logo_w - lw) // 2, logo_y + 6), logo_text, fill="white", font=font_title)
+
+    qr_size = 250
+    qr_resized = qr_img.resize((qr_size, qr_size), Image.LANCZOS)
+    qr_x = (W - qr_size) // 2
+    qr_y = 110
+    canvas.paste(qr_resized, (qr_x, qr_y))
+
+    qr_bottom = qr_y + qr_size
+    info_y = qr_bottom + 25
+
+    pp_id_text = display_phone
+    if len(display_phone) == 10 and display_phone.startswith('0'):
+        pp_id_text = f"{display_phone[:3]}-{display_phone[3:6]}-{display_phone[6:]}"
+    tb = draw.textbbox((0, 0), pp_id_text, font=font_label)
+    tw = tb[2] - tb[0]
+    draw.text(((W - tw) // 2, info_y), pp_id_text, fill="#333333", font=font_label)
+
+    if amount:
+        amt_text = f"{amount:,.2f} บาท"
+        tb2 = draw.textbbox((0, 0), amt_text, font=font_amount)
+        aw = tb2[2] - tb2[0]
+        draw.text(((W - aw) // 2, info_y + 30), amt_text, fill="#333333", font=font_amount)
+
+    footer = "สร้าง QR รับเงินด้วย S36 PromptPay"
+    tb3 = draw.textbbox((0, 0), footer, font=font_footer)
+    fw = tb3[2] - tb3[0]
+    draw.text(((W - fw) // 2, H - 40), footer, fill="#A6A6A6", font=font_footer)
+
     buf = io.BytesIO()
-    img.save(buf, format="PNG")
+    canvas.save(buf, format="PNG")
     buf.seek(0)
     return base64.b64encode(buf.read()).decode(), None
 
@@ -1238,7 +1305,7 @@ SYSTEM_PROMPT = (
     "     receiver_phone (เบอร์โทรศัพท์ผู้รับ).\n"
     "   - Ask for all missing fields in one message using EXACTLY these labels.\n"
     "   - When ALL info is collected → call generate_promptpay_qr with the price.\n"
-    "5. After generating QR → tell user to scan and pay, then upload slip. Do NOT create order yet.\n"
+    "5. After generate_promptpay_qr tool returns QR_CODE: data → you MUST paste the ENTIRE QR_CODE:...|AMOUNT:... string verbatim at the start of your response. Then add Thai payment instructions.\n"
     "6. User uploads payment slip → call verify_slip with image_base64 and expected_amount.\n"
     "   - If verify_slip returns verified=True → call create_shipping_order with all info plus slip data.\n"
     "   - If verify_slip returns verified=False → tell user to wait for admin review.\n"

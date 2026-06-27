@@ -2,12 +2,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata libzbar0 && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata libzbar0 fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir flask line-bot-sdk pillow qrcode[pil]
 
 COPY tools_agent.py .
 COPY S36_bot/line_bot.py .
+COPY S36_bot/promptpay_logo.jpg .
 
 ENV TZ=Asia/Bangkok
 
