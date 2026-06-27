@@ -5,6 +5,7 @@ import mimetypes
 import os
 import sys
 import urllib.request
+from datetime import datetime as dt
 
 import gradio as gr
 
@@ -15,6 +16,24 @@ from tools_agent import (
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_NATIVE = f"{OLLAMA_HOST}/api/chat"
+
+_conv_file = None
+
+def _log_conv(user_text, bot_text):
+    global _conv_file
+    try:
+        os.makedirs('conversations', exist_ok=True)
+        if _conv_file is None:
+            _conv_file = f"conversations/{dt.now().strftime('%Y%m%d_%H%M%S')}.txt"
+        with open(_conv_file, 'a', encoding='utf-8') as f:
+            ts = dt.now().strftime('%H:%M:%S')
+            if user_text:
+                f.write(f"[{ts}] User: {user_text}\n")
+            if bot_text:
+                f.write(f"[{ts}] Bot: {bot_text}\n")
+            f.write("\n")
+    except Exception:
+        pass
 
 TOOL_INFO_MAP = {
     'shipping_fee_calculator': 'กำลังคำนวณค่าส่ง...',
@@ -184,6 +203,7 @@ def chat_fn(message, history):
 
         if user_content and (not history or history[-1].get("content") != user_content):
             messages.append({"role": "user", "content": user_content})
+            _log_conv(user_content, None)
 
         response = ""
         tool_msgs = []
@@ -211,6 +231,8 @@ def chat_fn(message, history):
                     pass
             elif status == "done":
                 pass
+
+        _log_conv(None, response or ('\n'.join(tool_msgs) if tool_msgs else ''))
 
         if qr_base64:
             if response:

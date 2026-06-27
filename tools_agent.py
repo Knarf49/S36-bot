@@ -24,6 +24,7 @@ MODEL = "gemma4:e4b"
 NUM_CTX = 32000
 
 _pending_slip_base64 = None
+_qr_generated_at = None
 
 
 def set_pending_slip(b64):
@@ -36,6 +37,15 @@ def get_pending_slip():
     v = _pending_slip_base64
     _pending_slip_base64 = None
     return v
+
+
+def set_qr_generated_at(dt):
+    global _qr_generated_at
+    _qr_generated_at = dt
+
+
+def get_qr_generated_at():
+    return _qr_generated_at
 
 # ═══════════════════════════════════════════════════════════════════
 # 1. Rate tables (ported from rate_calculator.cjs)
@@ -596,7 +606,7 @@ def _ocr_typhoon(image_base64):
             "messages": [{
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Read this bank payment slip in Thai. Extract: 1) the transaction amount (จำนวนเงิน) as a number, 2) the recipient name (ชื่อผู้รับโอน/ไปยัง). Return only these values."},
+                    {"type": "text", "text": "Read this bank payment slip in Thai. Extract: 1) the transaction amount (จำนวนเงิน) as a number, 2) the recipient name (ชื่อผู้รับโอน/ไปยัง), 3) the transfer date and time (วันที่และเวลาโอน) in ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Return only these values."},
                     {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}}
                 ]
             }],
@@ -622,17 +632,88 @@ def _ocr_typhoon(image_base64):
         return {"amount": 0, "confidence": 0, "raw_text": str(e), "error": f"Typhoon API error: {e}"}
 
 
+def _extract_datetime(text):
+    if not isinstance(text, str):
+        return None
+
+    thai_months = {
+        'ม\\.?ค\\.?|มกราคม': 1, 'ก\\.?พ\\.?|กุมภาพันธ์': 2, 'มี\\.?ค\\.?|มีนาคม': 3,
+        'เม\\.?ย\\.?|เมษายน': 4, 'พ\\.?ค\\.?|พฤษภาคม': 5, 'มิ\\.?ย\\.?|มิถุนายน': 6,
+        'ก\\.?ค\\.?|กรกฎาคม': 7, 'ส\\.?ค\\.?|สิงหาคม': 8, 'ก\\.?ย\\.?|กันยายน': 9,
+        'ต\\.?ค\\.?|ตุลาคม': 10, 'พ\\.?ย\\.?|พฤศจิกายน': 11, 'ธ\\.?ค\\.?|ธันวาคม': 12,
+    }
+    time_pat = r'(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?'
+
+    iso_m = re.search(r'(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?', text)
+    if iso_m:
+        try:
+            parts = [int(g) for g in iso_m.groups() if g]
+            if len(parts) == 5:
+                return datetime(*parts)
+            return datetime(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
+        except (ValueError, TypeError):
+            pass
+
+    m = re.search(r'(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{4})', text)
+    if m:
+        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if y > 2500:
+            y -= 543
+        try:
+            dt_val = datetime(y, mo, d)
+            tm = re.search(time_pat, text[m.end():])
+            if tm:
+                h, mi, s = int(tm.group(1)), int(tm.group(2)), int(tm.group(3) or 0)
+                dt_val = dt_val.replace(hour=h, minute=mi, second=s)
+            return dt_val
+        except (ValueError, TypeError):
+            pass
+
+    for pat, mon in thai_months.items():
+        full_pat = rf'(\d{{1,2}})\s+(?:{pat})\s+(\d{{4}})'
+        m = re.search(full_pat, text)
+        if m:
+            d, y = int(m.group(1)), int(m.group(2))
+            if y > 2500:
+                y -= 543
+            try:
+                dt_val = datetime(y, mon, d)
+                tm = re.search(time_pat, text[m.end():])
+                if tm:
+                    h, mi, s = int(tm.group(1)), int(tm.group(2)), int(tm.group(3) or 0)
+                    dt_val = dt_val.replace(hour=h, minute=mi, second=s)
+                return dt_val
+            except (ValueError, TypeError):
+                pass
+
+    return None
+
+
 def _parse_typhoon_response(content):
+    if isinstance(content, list):
+        content = ' '.join(
+            item.get('text', '') if isinstance(item, dict) else str(item)
+            for item in content
+        )
+    elif not isinstance(content, str):
+        content = str(content)
+
     text_to_search = content
+    transfer_dt = _extract_datetime(content)
+    transfer_str = transfer_dt.isoformat() if transfer_dt else None
 
     try:
         obj = json.loads(content)
         if isinstance(obj, dict):
             if 'natural_text' in obj:
                 text_to_search = obj['natural_text']
+                if not transfer_dt:
+                    transfer_dt = _extract_datetime(text_to_search)
+                    transfer_str = transfer_dt.isoformat() if transfer_dt else None
             elif 'amount' in obj and isinstance(obj['amount'], (int, float)):
                 return {"amount": float(obj['amount']), "confidence": 0.85,
-                        "raw_text": content[:500], "source": "typhoon"}
+                        "raw_text": content[:500], "source": "typhoon",
+                        "transfer_datetime": transfer_str}
     except (json.JSONDecodeError, ValueError, TypeError):
         pass
 
@@ -647,7 +728,8 @@ def _parse_typhoon_response(content):
         if m:
             try:
                 return {"amount": float(m.group(1).replace(',', '')),
-                        "confidence": 0.85, "raw_text": text_to_search[:500], "source": "typhoon"}
+                        "confidence": 0.85, "raw_text": text_to_search[:500], "source": "typhoon",
+                        "transfer_datetime": transfer_str}
             except ValueError:
                 continue
 
@@ -657,7 +739,8 @@ def _parse_typhoon_response(content):
         if amounts:
             try:
                 return {"amount": float(amounts[0].replace(',', '')),
-                        "confidence": 0.7, "raw_text": text_to_search[:500], "source": "typhoon"}
+                        "confidence": 0.7, "raw_text": text_to_search[:500], "source": "typhoon",
+                        "transfer_datetime": transfer_str}
             except ValueError:
                 pass
 
@@ -665,11 +748,13 @@ def _parse_typhoon_response(content):
     if amounts:
         try:
             return {"amount": float(amounts[0].replace(',', '')),
-                    "confidence": 0.3, "raw_text": text_to_search[:500], "source": "typhoon"}
+                    "confidence": 0.3, "raw_text": text_to_search[:500], "source": "typhoon",
+                    "transfer_datetime": transfer_str}
         except ValueError:
             pass
 
-    return {"amount": 0.0, "confidence": 0.2, "raw_text": text_to_search[:500], "source": "typhoon"}
+    return {"amount": 0.0, "confidence": 0.2, "raw_text": text_to_search[:500], "source": "typhoon",
+            "transfer_datetime": transfer_str}
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -994,6 +1079,7 @@ def execute_tool(tool_call):
             "slip_ocr_amount": float(args.get("slip_ocr_amount", 0)),
             "slip_ocr_confidence": float(args.get("slip_ocr_confidence", 0)),
             "slip_ocr_raw": args.get("slip_ocr_raw", ""),
+            "slip_transfer_datetime": args.get("slip_transfer_datetime", ""),
         }
         missing = []
         if not body["customer_name"]: missing.append("ชื่อผู้ส่ง")
@@ -1037,6 +1123,7 @@ def execute_tool(tool_call):
         qr_base64, error = generate_promptpay_qr_base64(PROMPTPAY_PHONE, amount)
         if error:
             return f"สร้าง QR ไม่สำเร็จ: {error}"
+        set_qr_generated_at(datetime.now())
         return f"QR_CODE:{qr_base64}|AMOUNT:{amount}"
     elif name == 'verify_slip':
         image_b64 = args.get('image_base64', '')
@@ -1055,6 +1142,7 @@ def execute_tool(tool_call):
         ocr_amt = result['amount']
         conf = result['confidence']
         raw = result['raw_text']
+        transfer_str = result.get('transfer_datetime', '')
 
         tolerance = max(expected * 0.1, 5)
         amount_ok = abs(ocr_amt - expected) <= tolerance and conf >= 0.3
@@ -1064,12 +1152,29 @@ def execute_tool(tool_call):
             name_keywords = RECIPIENT_NAME.split()
             recipient_ok = any(kw in raw for kw in name_keywords if len(kw) >= 3)
 
-        if amount_ok and recipient_ok:
+        time_ok = True
+        time_reason = ""
+        if transfer_str:
+            try:
+                transfer_dt = datetime.fromisoformat(transfer_str)
+                qr_dt = get_qr_generated_at()
+                if qr_dt and transfer_dt < qr_dt:
+                    time_ok = False
+                    time_reason = (
+                        f"เวลาบนสลิป ({transfer_dt.strftime('%d/%m/%Y %H:%M')}) "
+                        f"เกิดก่อนเวลาที่ระบบสร้าง QR ({qr_dt.strftime('%d/%m/%Y %H:%M')})"
+                    )
+            except (ValueError, TypeError):
+                pass
+
+        transfer_token = f"SLIP_TRANSFER_DATETIME:{transfer_str}" if transfer_str else "SLIP_TRANSFER_DATETIME:"
+
+        if amount_ok and recipient_ok and time_ok:
             return (
                 f"VERIFIED_OK\n"
                 f"ยอดที่ตรวจพบ: {ocr_amt:.2f} บาท (คาดหวัง {expected:.2f} บาท)\n"
                 f"ความมั่นใจ OCR: {conf:.0%}\n"
-                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}"
+                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}|{transfer_token}"
             )
         else:
             reasons = []
@@ -1077,13 +1182,15 @@ def execute_tool(tool_call):
                 reasons.append(f"ยอดเงินไม่ตรง ({ocr_amt:.2f} vs {expected:.2f})")
             if not recipient_ok:
                 reasons.append("ไม่พบบัญชีปลายทางที่ถูกต้อง")
+            if not time_ok:
+                reasons.append(time_reason)
             return (
                 f"VERIFIED_PENDING\n"
                 f"⚠️ {', '.join(reasons)}\n"
                 f"ยอดที่ตรวจพบ: {ocr_amt:.2f} บาท\n"
                 f"ความมั่นใจ OCR: {conf:.0%}\n"
                 f"ระบบจะส่งให้ admin ตรวจสอบอีกครั้ง\n"
-                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}"
+                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}|{transfer_token}"
             )
     else:
         return f"Unknown tool: {name}"
