@@ -14,9 +14,13 @@
     "@google-cloud/dialogflow": "^7.6.2",
     "@google-cloud/dialogflow-cx": "^5.8.2",
     "@line/bot-sdk": "^11.0.2",
+    "canvas": "^3.2.3",
     "dialogflow-fulfillment": "^0.5.0",
     "exceljs": "^4.4.0",
     "express": "^5.2.1",
-    "playwright": "^1.61.0"
+    "opentype.js": "^2.0.0",
+    "playwright": "^1.61.0",
+    "promptpay-qr": "^0.5.0",
+    "qrcode": "^1.5.4"
   }
 }
