@@ -100,7 +100,7 @@ def build_state_block(sess: Session) -> str:
     if sess.selected_courier and sess.quoted_prices:
         price = sess.quoted_prices.get(sess.selected_courier, "?")
         lines.append(f"- User has selected courier: {sess.selected_courier}, price {price} THB")
-        lines.append("- DO NOT ask the user to pick a courier again. Proceed to collect sender/receiver info.")
+        lines.append("- DO NOT ask the user to pick a courier again.")
     elif sess.selected_courier:
         lines.append(f"- User has selected courier: {sess.selected_courier}")
         lines.append("- DO NOT ask the user to pick a courier again.")
@@ -110,4 +110,44 @@ def build_state_block(sess: Session) -> str:
         lines.append(f"- Receiver: {sess.receiver}")
     if sess.last_query:
         lines.append(f"- Last query: {sess.last_query}")
+    directive = _STAGE_DIRECTIVES.get(sess.stage)
+    if directive:
+        price_val = sess.quoted_prices.get(sess.selected_courier) if sess.selected_courier and sess.quoted_prices else None
+        lines.append(directive.format(amount=price_val if price_val else "???"))
     return "\n".join(lines)
+
+
+_STAGE_DIRECTIVES = {
+    Stage.AWAIT_PICK: (
+        "- PRICES SHOWN ABOVE. Ask ONE question: 'เลือกขนส่งเจ้าไหนคะ?'\n"
+        "- Do NOT offer other services. Do NOT ask 'ต้องการดำเนินการต่อไหม'."
+    ),
+    Stage.COLLECT_INFO: (
+        "- COURIER PICKED. Do NOT ask user to pick courier again.\n"
+        "- If user has NOT yet provided all 5 info fields → ask missing info in ONE message: ชื่อ-นามสกุลผู้ส่ง, เบอร์โทรผู้ส่ง, ที่อยู่คนส่ง, ชื่อผู้รับ, เบอร์โทรผู้รับ\n"
+        "- If user HAS provided all 5 info fields → CALL generate_promptpay_qr(amount={amount}) IMMEDIATELY. Do NOT output text first.\n"
+        "- Do NOT write English field names."
+    ),
+    Stage.AWAIT_PAYMENT: (
+        "- QR SENT. Wait for payment slip upload.\n"
+        "- Do NOT ask for more info. Do NOT regenerate QR."
+    ),
+}
+
+
+def needs_qr(sess) -> bool:
+    return sess.stage == Stage.COLLECT_INFO and sess.selected_courier and sess.quoted_prices
+
+
+def parse_info_fields(text: str, sess) -> bool:
+    """Extract sender/receiver info from user text. Return True if all 5 fields now set."""
+    m = re.search(r'ผู้ส่ง[:\s]*(\S+)', text)
+    if m:
+        sess.sender = m.group(1)
+    m = re.search(r'0[689]\d{1,3}[\s-]*\d{3,4}[\s-]*\d{3,4}', text)
+    if m:
+        sess.sender_phone = m.group(0)
+    m = re.search(r'ผู้รับ[:\s]*(\S+)', text)
+    if m:
+        sess.receiver = m.group(1)
+    return sess.sender is not None and sess.receiver is not None

@@ -13,7 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tools_agent import (
     SYSTEM_PROMPT, MODEL, TOOLS, NUM_CTX, execute_tool, set_pending_slip,
 )
-from session_state import get_session, detect_courier, build_state_block, Stage, STAGE_TOOLS, advance_if_prices
+from session_state import get_session, detect_courier, build_state_block, Stage, STAGE_TOOLS, advance_if_prices, needs_qr, parse_info_fields
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_NATIVE = f"{OLLAMA_HOST}/api/chat"
@@ -211,18 +211,33 @@ def chat_fn(message, history, request: gr.Request | None = None):
         # State machine: detect courier choice, gate tools, inject state block
         sess = get_session(str(request.session_hash) if request and hasattr(request, 'session_hash') else 'gradio_default')
         # Detect courier + advance stage based on tool results
-        picked = detect_courier(user_content or "")
-        if picked and sess.stage == Stage.AWAIT_PICK:
-            sess.selected_courier = picked
-            sess.stage = Stage.COLLECT_INFO
-
         advance_if_prices(sess, messages)
+
+        picked = detect_courier(user_content or "")
+        if picked:
+            if sess.stage == Stage.AWAIT_PICK:
+                sess.selected_courier = picked
+                sess.stage = Stage.COLLECT_INFO
+            elif sess.stage == Stage.COLLECT_INFO and picked != sess.selected_courier:
+                sess.selected_courier = picked  # re-pick
 
         state_block = build_state_block(sess)
         print(f"[STATE] stage={sess.stage.name} courier={sess.selected_courier} prices={list(sess.quoted_prices.keys())}")
         messages[0] = {"role": "system", "content": SYSTEM_PROMPT + "\n\n" + state_block}
         allowed = STAGE_TOOLS.get(sess.stage, None)
         gated_tools = [t for t in TOOLS if t["function"]["name"] in allowed] if allowed is not None else TOOLS
+
+        # Force QR generation when info provided in COLLECT_INFO (8B tool-call gap)
+        parse_info_fields(user_content or "", sess)
+        if needs_qr(sess):
+            price = sess.quoted_prices[sess.selected_courier]
+            result = execute_tool({"function": {"name": "generate_promptpay_qr", "arguments": {"amount": price}}})
+            if "QR_CODE:" in result:
+                b64 = result.split("QR_CODE:")[1].split("|")[0].strip()
+                sess.stage = Stage.AWAIT_PAYMENT
+                _log_conv(None, f"QR_CODE generated ({price} THB)")
+                yield f'<div style="text-align:center;margin:10px 0;"><img src="data:image/png;base64,{b64}" alt="PromptPay QR" style="max-width:280px;border-radius:8px;border:2px solid #e5e7eb;"/><br><small>สแกนเพื่อชำระเงิน {price:.0f} บาท</small></div>'
+                return
 
         response = ""
         tool_msgs = []
@@ -252,6 +267,7 @@ def chat_fn(message, history, request: gr.Request | None = None):
                 pass
 
         _log_conv(None, response or ('\n'.join(tool_msgs) if tool_msgs else ''))
+        advance_if_prices(sess, messages)  # scan tool results just added by stream_ollama
 
         if qr_base64:
             sess.stage = Stage.AWAIT_PAYMENT

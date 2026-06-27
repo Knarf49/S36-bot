@@ -15,7 +15,7 @@ from tools_agent import (
     execute_tool, set_pending_slip, get_pending_slip,
     call_ollama, run_tool_loop,
 )
-from session_state import get_session, detect_courier, build_state_block, Stage, advance_if_prices
+from session_state import get_session, detect_courier, build_state_block, Stage, advance_if_prices, needs_qr, parse_info_fields
 
 app = Flask(__name__)
 
@@ -68,15 +68,34 @@ def handle_text(event):
 
     # Courier detection: if user types a courier name, Python captures it
     picked = detect_courier(text)
-    if picked and sess.stage == Stage.AWAIT_PICK:
-        sess.selected_courier = picked
-        sess.stage = Stage.COLLECT_INFO
-        print(f"[STATE] user={user_id} picked courier={picked}, advanced to COLLECT_INFO")
+    if picked:
+        if sess.stage == Stage.AWAIT_PICK:
+            sess.selected_courier = picked
+            sess.stage = Stage.COLLECT_INFO
+            print(f"[STATE] user={user_id} picked courier={picked}, advanced to COLLECT_INFO")
+        elif sess.stage == Stage.COLLECT_INFO and picked != sess.selected_courier:
+            sess.selected_courier = picked
+            print(f"[STATE] user={user_id} re-picked courier to {picked}")
 
     msgs = get_convo(user_id)
     msgs.append({"role": "user", "content": text})
 
     try:
+        # Force QR generation when all info collected (8B model compliance gap)
+        parse_info_fields(text, sess)
+        if needs_qr(sess):
+            price = sess.quoted_prices[sess.selected_courier]
+            result = execute_tool({"function": {"name": "generate_promptpay_qr", "arguments": {"amount": price}}})
+            if "QR_CODE:" in result:
+                b64 = result.split("QR_CODE:")[1].split("|")[0].strip()
+                sess.stage = Stage.AWAIT_PAYMENT
+                print(f"[STATE] user={user_id} Python-forced QR, advanced to AWAIT_PAYMENT")
+                # Inject tool call + result so model sees it
+                msgs.append({"role": "assistant", "content": "", "tool_calls": [
+                    {"index": 0, "function": {"name": "generate_promptpay_qr", "arguments": {"amount": price}}}
+                ]})
+                msgs.append({"role": "tool", "content": result})
+
         print(f"[BOT] calling run_tool_loop (stage={sess.stage.name})...")
         msgs = run_tool_loop(msgs, user_id, sess)
         print(f"[BOT] run_tool_loop done, {len(msgs)} messages")
