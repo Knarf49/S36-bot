@@ -24,32 +24,46 @@ MODEL = "gemma4:e4b"
 NUM_CTX = 32000
 TEST_MODE = os.getenv("TEST_MODE", "").lower() in ("1", "true", "yes")
 
-_pending_slip_base64 = None
+_pending_slip_base64 = None  # global default (backward compat, gemma_gradio.py)
 _qr_generated_at = None
+_user_slips = {}  # { user_id: base64 }
+_user_qr_times = {}  # { user_id: datetime }
 
 
-def set_pending_slip(b64):
+def set_pending_slip(b64, user_id=None):
     global _pending_slip_base64
-    _pending_slip_base64 = b64
+    if user_id is not None:
+        _user_slips[user_id] = b64
+    else:
+        _pending_slip_base64 = b64
 
 
-def get_pending_slip():
+def get_pending_slip(user_id=None):
     global _pending_slip_base64
+    if user_id is not None:
+        return _user_slips.pop(user_id, None)
     v = _pending_slip_base64
     _pending_slip_base64 = None
     return v
 
 
-def peek_pending_slip():
+def peek_pending_slip(user_id=None):
+    if user_id is not None:
+        return _user_slips.get(user_id)
     return _pending_slip_base64
 
 
-def set_qr_generated_at(dt):
+def set_qr_generated_at(dt, user_id=None):
     global _qr_generated_at
-    _qr_generated_at = dt
+    if user_id is not None:
+        _user_qr_times[user_id] = dt
+    else:
+        _qr_generated_at = dt
 
 
-def get_qr_generated_at():
+def get_qr_generated_at(user_id=None):
+    if user_id is not None:
+        return _user_qr_times.get(user_id)
     return _qr_generated_at
 
 # ═══════════════════════════════════════════════════════════════════
@@ -1020,7 +1034,7 @@ TOOLS = [
 # 6. Tool execution dispatch
 # ═══════════════════════════════════════════════════════════════════
 
-def execute_tool(tool_call):
+def execute_tool(tool_call, user_id=None):
     name = tool_call['function']['name']
     raw_args = tool_call['function']['arguments']
     if isinstance(raw_args, dict):
@@ -1080,7 +1094,7 @@ def execute_tool(tool_call):
             "courier_code": args.get("courier_code", ""),
             "courier_name": args.get("courier_name", ""),
             "price": float(args.get("price", 0)),
-            "slip_image_base64": get_pending_slip() or args.get("slip_image_base64", ""),
+            "slip_image_base64": get_pending_slip(user_id) or args.get("slip_image_base64", ""),
             "slip_ocr_amount": float(args.get("slip_ocr_amount", 0)),
             "slip_ocr_confidence": float(args.get("slip_ocr_confidence", 0)),
             "slip_ocr_raw": args.get("slip_ocr_raw", ""),
@@ -1128,12 +1142,12 @@ def execute_tool(tool_call):
         qr_base64, error = generate_promptpay_qr_base64(PROMPTPAY_PHONE, amount)
         if error:
             return f"สร้าง QR ไม่สำเร็จ: {error}"
-        set_qr_generated_at(datetime.now())
+        set_qr_generated_at(datetime.now(), user_id)
         return f"QR_CODE:{qr_base64}|AMOUNT:{amount}"
     elif name == 'verify_slip':
         image_b64 = args.get('image_base64', '')
         if not image_b64 or len(image_b64) < 100 or image_b64.startswith('['):
-            image_b64 = peek_pending_slip()
+            image_b64 = peek_pending_slip(user_id)
         expected = float(args.get('expected_amount', 0))
         if not image_b64:
             return "ไม่พบรูปสลิปที่ส่งมา"
@@ -1169,7 +1183,7 @@ def execute_tool(tool_call):
         if transfer_str:
             try:
                 transfer_dt = datetime.fromisoformat(transfer_str)
-                qr_dt = get_qr_generated_at()
+                qr_dt = get_qr_generated_at(user_id)
                 if qr_dt and transfer_dt < qr_dt:
                     time_ok = False
                     time_reason = (
@@ -1248,7 +1262,7 @@ def call_ollama(messages, stream=False):
     with urllib.request.urlopen(req, timeout=120) as resp:
         return json.loads(resp.read())
 
-def run_tool_loop(messages):
+def run_tool_loop(messages, user_id=None):
     """Run non-streaming tool-call loop. Returns updated messages."""
     for _ in range(5):
         resp = call_ollama(messages, stream=False)
@@ -1256,7 +1270,7 @@ def run_tool_loop(messages):
         if msg.get('tool_calls'):
             messages.append(msg)
             for tc in msg['tool_calls']:
-                tool_result = execute_tool(tc)
+                tool_result = execute_tool(tc, user_id)
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc['id'],

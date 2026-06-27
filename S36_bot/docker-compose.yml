@@ -29,5 +29,30 @@ services:
       - TEST_MODE=${TEST_MODE:-0}
     restart: unless-stopped
 
+  line-bot:
+    build:
+      context: ..
+      dockerfile: S36_bot/Dockerfile.line
+    container_name: S36_bot-line
+    environment:
+      - TZ=Asia/Bangkok
+      - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
+      - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://localhost:11434}
+      - ORDER_API_URL=http://S36_bot-orders:8000
+      - PROMPTPAY_PHONE=${PROMPTPAY_PHONE}
+      - TYPHOON_API_KEY=${TYPHOON_API_KEY}
+      - TEST_MODE=${TEST_MODE:-0}
+      - NGROK_DOMAIN=${NGROK_DOMAIN:-s36bot.ngrok-free.app}
+    restart: unless-stopped
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: S36_bot-ngrok
+    command: http --url=${NGROK_DOMAIN:-s36bot.ngrok-free.app} line-bot:5000
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    restart: unless-stopped
+
 volumes:
   order-data:
