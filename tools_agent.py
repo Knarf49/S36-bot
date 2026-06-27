@@ -7,7 +7,10 @@ Pattern: raw Ollama /v1/chat/completions tool-call loop (no browser-use)
 import json
 import math
 import os
+import re
 import sys
+import base64
+import io
 import urllib.request
 from datetime import datetime, timezone
 
@@ -15,8 +18,24 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_URL = f"{OLLAMA_HOST}/v1/chat/completions"
 OLLAMA_NATIVE_URL = f"{OLLAMA_HOST}/api/chat"
 DASHBOARD_URL = os.getenv("ORDER_API_URL", "http://localhost:8000")
+PROMPTPAY_PHONE = os.getenv("PROMPTPAY_PHONE", "")
+RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "")
 MODEL = "gemma4:e4b"
 NUM_CTX = 32000
+
+_pending_slip_base64 = None
+
+
+def set_pending_slip(b64):
+    global _pending_slip_base64
+    _pending_slip_base64 = b64
+
+
+def get_pending_slip():
+    global _pending_slip_base64
+    v = _pending_slip_base64
+    _pending_slip_base64 = None
+    return v
 
 # ═══════════════════════════════════════════════════════════════════
 # 1. Rate tables (ported from rate_calculator.cjs)
@@ -433,6 +452,226 @@ def normalize_province(raw):
             return p
     return None
 
+
+def _crc16_ccitt(data_bytes):
+    crc = 0xFFFF
+    for b in data_bytes:
+        crc ^= b << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = (crc << 1) ^ 0x1021
+            else:
+                crc <<= 1
+            crc &= 0xFFFF
+    return crc
+
+
+def _tlv(tag, value):
+    return f"{int(tag):02d}{len(value):02d}{value}"
+
+
+def generate_promptpay_qr_base64(phone, amount):
+    phone = (phone or '').strip()
+    if not phone:
+        return None, "PROMPTPAY_PHONE ไม่ได้ตั้งค่า"
+    phone_num = phone.replace('-', '').replace(' ', '')
+    if phone_num.startswith('0'):
+        phone_num = f"0066{phone_num[1:]}"
+
+    merchant_info = _tlv("00", "A000000677010111") + _tlv("01", phone_num)
+    payload = (
+        _tlv("00", "01")
+        + _tlv("01", "11")
+        + _tlv("29", merchant_info)
+        + _tlv("53", "764")
+    )
+    if amount:
+        amt_str = f"{amount:.2f}"
+        payload += _tlv("54", amt_str)
+    payload += _tlv("58", "TH")
+    payload += "6304"
+    payload_bytes = payload.encode('ascii')
+    crc = _crc16_ccitt(payload_bytes)
+    crc_hex = f"{crc:04X}"
+    payload += crc_hex
+
+    try:
+        import qrcode
+        from PIL import Image
+    except ImportError:
+        return None, "qrcode/Pillow not installed"
+
+    qr = qrcode.QRCode(
+        version=None,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,
+        box_size=8,
+        border=2,
+    )
+    qr.add_data(payload)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color="black", back_color="white")
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode(), None
+
+
+def ocr_slip(image_base64):
+    try:
+        img_bytes = base64.b64decode(image_base64)
+    except Exception as e:
+        return {"amount": 0, "confidence": 0, "raw_text": "", "error": f"decode image failed: {e}"}
+
+    try:
+        from PIL import Image
+        img = Image.open(io.BytesIO(img_bytes))
+    except Exception:
+        return {"amount": 0, "confidence": 0, "raw_text": "", "error": "cannot open image"}
+
+    qr_result = _decode_qr(img)
+    typhoon_result = _ocr_typhoon(image_base64)
+
+    if typhoon_result and typhoon_result.get('amount', 0) > 0:
+        if qr_result.get('ref'):
+            typhoon_result['ref'] = qr_result['ref']
+            typhoon_result['has_qr'] = True
+        return typhoon_result
+
+    if qr_result.get('ref') and typhoon_result:
+        return typhoon_result
+
+    if typhoon_result and typhoon_result.get('amount', 0) > 0:
+        return typhoon_result
+
+    return {"amount": 0, "confidence": 0, "raw_text": "", "error": "ไม่สามารถอ่านสลิปได้"}
+
+
+def _decode_qr(pil_image):
+    try:
+        from pyzbar.pyzbar import decode as zbar_decode
+    except ImportError:
+        return {}
+
+    try:
+        decoded = zbar_decode(pil_image)
+    except Exception:
+        return {}
+
+    for d in decoded:
+        if d.type not in ('QRCODE',):
+            continue
+        data = d.data.decode('utf-8', errors='replace').strip()
+        result = _parse_qr_data(data)
+        if result.get("amount"):
+            return result
+
+    return {}
+
+
+def _parse_qr_data(data):
+    if data.startswith('{'):
+        try:
+            obj = json.loads(data)
+            ref = obj.get('ref1', '') or obj.get('ref2', '') or obj.get('reference', '')
+            return {"amount": 0, "ref": str(ref), "raw": data}
+        except json.JSONDecodeError:
+            pass
+    if '|' in data:
+        parts = dict(p.split('=', 1) for p in data.split('|') if '=' in p)
+        ref = parts.get('ref', parts.get('ref1', ''))
+        return {"amount": 0, "ref": ref, "raw": data}
+
+    ref_match = re.search(r'[A-Za-z0-9]{15,30}', data)
+    return {"amount": 0, "ref": ref_match.group(0) if ref_match else "", "raw": data}
+
+
+def _ocr_typhoon(image_base64):
+    api_key = os.getenv("TYPHOON_API_KEY", "").strip()
+    if not api_key:
+        return None
+
+    try:
+        body = json.dumps({
+            "model": "typhoon-ocr-preview",
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Read this bank payment slip in Thai. Extract: 1) the transaction amount (จำนวนเงิน) as a number, 2) the recipient name (ชื่อผู้รับโอน/ไปยัง). Return only these values."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}}
+                ]
+            }],
+            "max_tokens": 1024,
+            "temperature": 0.1,
+        }).encode('utf-8')
+
+        req = urllib.request.Request(
+            "https://api.opentyphoon.ai/v1/chat/completions",
+            data=body,
+            method='POST',
+            headers={
+                'Content-Type': 'application/json',
+                'Authorization': f'Bearer {api_key}',
+            }
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+
+        content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
+        return _parse_typhoon_response(content)
+    except Exception as e:
+        return {"amount": 0, "confidence": 0, "raw_text": str(e), "error": f"Typhoon API error: {e}"}
+
+
+def _parse_typhoon_response(content):
+    text_to_search = content
+
+    try:
+        obj = json.loads(content)
+        if isinstance(obj, dict):
+            if 'natural_text' in obj:
+                text_to_search = obj['natural_text']
+            elif 'amount' in obj and isinstance(obj['amount'], (int, float)):
+                return {"amount": float(obj['amount']), "confidence": 0.85,
+                        "raw_text": content[:500], "source": "typhoon"}
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+
+    patterns = [
+        r'จำนวนเงิน\s*[:\-\s]*\s*([\d,]+\.?\d+)',
+        r'Amount\s*[:\-\s]*\s*([\d,]+\.?\d+)',
+        r'[\u0E3F฿]\s*([\d,]+\.?\d+)',
+        r'([\d,]+\.?\d+)\s*บาท',
+    ]
+    for p in patterns:
+        m = re.search(p, text_to_search, re.IGNORECASE)
+        if m:
+            try:
+                return {"amount": float(m.group(1).replace(',', '')),
+                        "confidence": 0.85, "raw_text": text_to_search[:500], "source": "typhoon"}
+            except ValueError:
+                continue
+
+    prefix = text_to_search.split('จำนวนเงิน')
+    if len(prefix) > 1:
+        amounts = re.findall(r'([\d,]+\.?\d{2})', prefix[-1])
+        if amounts:
+            try:
+                return {"amount": float(amounts[0].replace(',', '')),
+                        "confidence": 0.7, "raw_text": text_to_search[:500], "source": "typhoon"}
+            except ValueError:
+                pass
+
+    amounts = re.findall(r'([\d,]+\.?\d{2})', text_to_search)
+    if amounts:
+        try:
+            return {"amount": float(amounts[0].replace(',', '')),
+                    "confidence": 0.3, "raw_text": text_to_search[:500], "source": "typhoon"}
+        except ValueError:
+            pass
+
+    return {"amount": 0.0, "confidence": 0.2, "raw_text": text_to_search[:500], "source": "typhoon"}
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 3. Schedule check (ported from fulfillment/index.js)
 # ═══════════════════════════════════════════════════════════════════
@@ -570,10 +809,56 @@ TOOLS = [
     {
         "type": "function",
         "function": {
+            "name": "generate_promptpay_qr",
+            "description": (
+                "Generate a PromptPay QR code for the customer to scan and pay. "
+                "Call this AFTER user has agreed to a courier and price, and provided all required info (name, phone, pickup_address, receiver info). "
+                "Shows the QR code and payment amount in chat. Then wait for user to upload a payment slip."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "amount": {
+                        "type": "number",
+                        "description": "The shipping price in baht from the previous shipping_fee_calculator result"
+                    },
+                },
+                "required": ["amount"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_slip",
+            "description": (
+                "OCR a payment slip image uploaded by user to verify payment amount. "
+                "Compares extracted amount with expected shipping fee. "
+                "If verified, create the order using create_shipping_order with slip data attached."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "image_base64": {
+                        "type": "string",
+                        "description": "Base64 encoded payment slip image uploaded by the user"
+                    },
+                    "expected_amount": {
+                        "type": "number",
+                        "description": "The shipping price in baht expected to be paid"
+                    },
+                },
+                "required": ["image_base64", "expected_amount"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "create_shipping_order",
             "description": (
-                "Create a shipping order in the dashboard. Call when user confirms they want to send a package, "
-                "agrees to a courier/price, or says something like 'ok send it'."
+                "Create a shipping order in the dashboard. Call AFTER verify_slip succeeded. "
+                "Pass slip data (image_base64, ocr_amount, ocr_confidence, ocr_raw) from verify_slip result."
             ),
             "parameters": {
                 "type": "object",
@@ -588,7 +873,7 @@ TOOLS = [
                     },
                     "pickup_address": {
                         "type": "string",
-                        "description": "Pickup address — the sender's address where courier picks up the package. Must ask user for this (ที่อยู่คนส่ง)."
+                        "description": "Pickup address (ที่อยู่คนส่ง). Must ask user."
                     },
                     "delivery_province": {
                         "type": "string",
@@ -617,6 +902,22 @@ TOOLS = [
                     "price": {
                         "type": "number",
                         "description": "Shipping price in baht (from previous shipping_fee_calculator result)."
+                    },
+                    "slip_image_base64": {
+                        "type": "string",
+                        "description": "Base64 encoded slip image from user upload. Pass from verify_slip result."
+                    },
+                    "slip_ocr_amount": {
+                        "type": "number",
+                        "description": "OCR extracted amount from verify_slip result (SLIP_OCR_AMOUNT)."
+                    },
+                    "slip_ocr_confidence": {
+                        "type": "number",
+                        "description": "OCR confidence from verify_slip result (SLIP_OCR_CONFIDENCE)."
+                    },
+                    "slip_ocr_raw": {
+                        "type": "string",
+                        "description": "OCR raw text from verify_slip result (SLIP_OCR_RAW)."
                     },
                 },
                 "required": ["customer_name", "customer_phone", "pickup_address", "delivery_province", "receiver_name", "receiver_phone", "weight_kg", "courier_code", "courier_name", "price"],
@@ -689,6 +990,10 @@ def execute_tool(tool_call):
             "courier_code": args.get("courier_code", ""),
             "courier_name": args.get("courier_name", ""),
             "price": float(args.get("price", 0)),
+            "slip_image_base64": args.get("slip_image_base64", ""),
+            "slip_ocr_amount": float(args.get("slip_ocr_amount", 0)),
+            "slip_ocr_confidence": float(args.get("slip_ocr_confidence", 0)),
+            "slip_ocr_raw": args.get("slip_ocr_raw", ""),
         }
         missing = []
         if not body["customer_name"]: missing.append("ชื่อผู้ส่ง")
@@ -711,16 +1016,75 @@ def execute_tool(tool_call):
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read())
+            status_msg = result.get('status', 'ยังไม่ได้กรอกลงระบบ')
+            slip_info = ""
+            if result.get('slip_image_path'):
+                slip_info = f"\nสลิป: แนบแล้ว (สถานะ: {status_msg})"
             return (
                 f"สร้างออเดอร์สำเร็จ!\n"
                 f"เลขออเดอร์: {result['id']}\n"
                 f"ปลายทาง: {body['delivery_province']} | {body['weight_kg']} kg\n"
                 f"ขนส่ง: {body['courier_name']} | ราคา: {body['price']} บาท\n"
-                f"ผู้รับ: {body['receiver_name']} | {body['receiver_phone']}\n"
-                f"สถานะ: {result.get('status', 'ยังไม่ได้กรอกลงระบบ')}"
+                f"ผู้รับ: {body['receiver_name']} | {body['receiver_phone']}{slip_info}\n"
+                f"สถานะ: {status_msg}"
             )
         except Exception as e:
             return f"สร้างออเดอร์ไม่สำเร็จ: {e}"
+    elif name == 'generate_promptpay_qr':
+        amount = float(args.get('amount', 0))
+        if amount <= 0:
+            return "กรุณาระบุยอดเงินที่ถูกต้อง"
+        qr_base64, error = generate_promptpay_qr_base64(PROMPTPAY_PHONE, amount)
+        if error:
+            return f"สร้าง QR ไม่สำเร็จ: {error}"
+        return f"QR_CODE:{qr_base64}|AMOUNT:{amount}"
+    elif name == 'verify_slip':
+        image_b64 = args.get('image_base64', '')
+        if not image_b64 or len(image_b64) < 100 or image_b64.startswith('['):
+            image_b64 = get_pending_slip()
+        expected = float(args.get('expected_amount', 0))
+        if not image_b64:
+            return "ไม่พบรูปสลิปที่ส่งมา"
+        if expected <= 0:
+            return "ไม่พบยอดเงินที่คาดหวัง"
+
+        result = ocr_slip(image_b64)
+        if result.get('error'):
+            return f"OCR_FAILED:{result['error']}"
+
+        ocr_amt = result['amount']
+        conf = result['confidence']
+        raw = result['raw_text']
+
+        tolerance = max(expected * 0.1, 5)
+        amount_ok = abs(ocr_amt - expected) <= tolerance and conf >= 0.3
+
+        recipient_ok = True
+        if RECIPIENT_NAME:
+            name_keywords = RECIPIENT_NAME.split()
+            recipient_ok = any(kw in raw for kw in name_keywords if len(kw) >= 3)
+
+        if amount_ok and recipient_ok:
+            return (
+                f"VERIFIED_OK\n"
+                f"ยอดที่ตรวจพบ: {ocr_amt:.2f} บาท (คาดหวัง {expected:.2f} บาท)\n"
+                f"ความมั่นใจ OCR: {conf:.0%}\n"
+                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}"
+            )
+        else:
+            reasons = []
+            if not amount_ok:
+                reasons.append(f"ยอดเงินไม่ตรง ({ocr_amt:.2f} vs {expected:.2f})")
+            if not recipient_ok:
+                reasons.append("ไม่พบบัญชีปลายทางที่ถูกต้อง")
+            return (
+                f"VERIFIED_PENDING\n"
+                f"⚠️ {', '.join(reasons)}\n"
+                f"ยอดที่ตรวจพบ: {ocr_amt:.2f} บาท\n"
+                f"ความมั่นใจ OCR: {conf:.0%}\n"
+                f"ระบบจะส่งให้ admin ตรวจสอบอีกครั้ง\n"
+                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}"
+            )
     else:
         return f"Unknown tool: {name}"
 
@@ -735,15 +1099,17 @@ SYSTEM_PROMPT = (
     "   - If user gave province+weight → call immediately, then summarize results in Thai.\n"
     "   - If info missing → ask short question in Thai for missing piece only.\n"
     "3. User asks about order status/tracking → MUST call get_shipping_status. Then answer in Thai.\n"
-    "4. User confirms courier choice or wants to create order → call create_shipping_order.\n"
-    "   - Use delivery_province and weight_kg from previous shipping_fee_calculator call.\n"
-    "   - Use courier_code, courier_name, price from user's selected courier.\n"
-    "   - You MUST collect ALL of these from user before calling tool:\n"
-    "     customer_name (ชื่อผู้ส่ง), customer_phone (เบอร์ผู้ส่ง),\n"
+    "4. User confirms courier choice or wants to create order → First collect ALL needed info:\n"
+    "     customer_name (ชื่อ-นามสกุล ผู้ส่ง), customer_phone (เบอร์โทรศัพท์ผู้ส่ง),\n"
     "     pickup_address (ที่อยู่คนส่ง), receiver_name (ชื่อผู้รับ),\n"
-    "     receiver_phone (เบอร์ผู้รับ).\n"
-    "   - Ask for all missing fields in one message.\n"
-    "5. User says hi/thanks only → respond in Thai, no tool needed.\n"
+    "     receiver_phone (เบอร์โทรศัพท์ผู้รับ).\n"
+    "   - Ask for all missing fields in one message using EXACTLY these labels.\n"
+    "   - When ALL info is collected → call generate_promptpay_qr with the price.\n"
+    "5. After generating QR → tell user to scan and pay, then upload slip. Do NOT create order yet.\n"
+    "6. User uploads payment slip → call verify_slip with image_base64 and expected_amount.\n"
+    "   - If verify_slip returns verified=True → call create_shipping_order with all info plus slip data.\n"
+    "   - If verify_slip returns verified=False → tell user to wait for admin review.\n"
+    "7. User says hi/thanks only → respond in Thai, no tool needed.\n"
     "CRITICAL: After getting tool result, respond in Thai. Never call same tool twice."
 )
 

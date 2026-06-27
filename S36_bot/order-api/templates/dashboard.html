@@ -26,6 +26,7 @@ tr:hover { background: #f8fafc; }
 .status-notsent { background: #dbeafe; color: #1e40af; }
 .status-shipping { background: #e0e7ff; color: #3730a3; }
 .status-delivered { background: #d1fae5; color: #065f46; }
+.status-review { background: #fce7f3; color: #9d174d; }
 .status-unknown { background: #f1f5f9; color: #64748b; }
 .editable { cursor: pointer; min-width: 40px; }
 .editable:hover { background: #e5e7eb; border-radius: 3px; }
@@ -34,6 +35,17 @@ tr:hover { background: #f8fafc; }
 .btn-save:hover { background: #1d4ed8; }
 .loading { text-align: center; padding: 2rem; color: #666; }
 .empty { text-align: center; padding: 3rem; color: #999; }
+.modal-overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center; }
+.modal-overlay.active { display:flex; }
+.modal-box { background:#fff; border-radius:8px; padding:1.5rem; max-width:600px; width:90%; max-height:90vh; overflow-y:auto; box-shadow:0 4px 24px rgba(0,0,0,0.2); }
+.modal-box img { max-width:100%; border-radius:4px; border:1px solid #ddd; }
+.modal-box h3 { margin-bottom:0.75rem; }
+.modal-box .ocr-info { background:#f8fafc; padding:0.75rem; border-radius:4px; margin:0.75rem 0; font-size:0.85rem; }
+.modal-box .btn-approve { background:#059669; color:#fff; padding:0.5rem 1.5rem; border:none; border-radius:6px; cursor:pointer; font-size:0.9rem; font-weight:600; }
+.modal-box .btn-approve:hover { background:#047857; }
+.modal-box .btn-close { background:#9ca3af; color:#fff; padding:0.5rem 1.5rem; border:none; border-radius:6px; cursor:pointer; font-size:0.9rem; margin-right:0.5rem; }
+.slip-link { cursor:pointer; color:#2563eb; font-size:0.8rem; text-decoration:underline; }
+.slip-link:hover { color:#1d4ed8; }
 </style>
 </head>
 <body>
@@ -53,6 +65,7 @@ tr:hover { background: #f8fafc; }
       &nbsp; สถานะ <select id="statusFilter" onchange="changeFilter()">
         <option value="">ทั้งหมด</option>
         <option value="กำลังกรอกข้อมูลลงระบบ">กำลังกรอกข้อมูลลงระบบ</option>
+        <option value="รอตรวจสอบสลิป">รอตรวจสอบสลิป</option>
         <option value="ยังไม่ส่ง">ยังไม่ส่ง</option>
         <option value="กำลังจัดส่ง">กำลังจัดส่ง</option>
         <option value="ส่งถึงแล้ว">ส่งถึงแล้ว</option>
@@ -80,16 +93,30 @@ tr:hover { background: #f8fafc; }
         <th>ราคา</th>
         <th>Tracking</th>
         <th>สถานะ</th>
+        <th>สลิป</th>
       </tr>
     </thead>
     <tbody id="orderBody">
-      <tr><td colspan="12" class="loading">กำลังโหลด...</td></tr>
+      <tr><td colspan="13" class="loading">กำลังโหลด...</td></tr>
     </tbody>
   </table>
 </div>
 
+<div class="modal-overlay" id="slipModal">
+  <div class="modal-box">
+    <h3>ตรวจสอบสลิป — <span id="slipModalOrderId"></span></h3>
+    <img id="slipModalImage" src="" alt="Slip Image" style="display:none;">
+    <div id="slipModalNoImage" style="display:none; color:#999;">ไม่มีรูปสลิป</div>
+    <div class="ocr-info" id="slipModalOcr"></div>
+    <div>
+      <button class="btn-close" onclick="closeSlipModal()">ปิด</button>
+      <button class="btn-approve" id="slipModalApproveBtn" onclick="approveSlip()">✅ ตรวจสอบแล้ว</button>
+    </div>
+  </div>
+</div>
+
 <script>
-const STATUS_OPTIONS = ['กำลังกรอกข้อมูลลงระบบ', 'ยังไม่ส่ง', 'กำลังจัดส่ง', 'ส่งถึงแล้ว'];
+const STATUS_OPTIONS = ['กำลังกรอกข้อมูลลงระบบ', 'รอตรวจสอบสลิป', 'ยังไม่ส่ง', 'กำลังจัดส่ง', 'ส่งถึงแล้ว'];
 let currentPage = 1;
 let pageSize = 20;
 let statusFilter = '';
@@ -97,6 +124,7 @@ let totalOrders = 0;
 
 function statusClass(s) {
   if (s === 'กำลังกรอกข้อมูลลงระบบ') return 'status-pending';
+  if (s === 'รอตรวจสอบสลิป') return 'status-review';
   if (s === 'ยังไม่ส่ง') return 'status-notsent';
   if (s === 'กำลังจัดส่ง') return 'status-shipping';
   if (s === 'ส่งถึงแล้ว') return 'status-delivered';
@@ -147,6 +175,7 @@ async function saveEdit(el, orderId) {
 }
 
 function rebuildRow(tr, o) {
+  const hasSlip = o.slip_image_path && o.slip_image_path !== '';
   tr.innerHTML = `
     <td><code>${o.id}</code></td>
     <td class="editable" data-value="${escapeHtml(o.customer_name||'')}" onclick="startEdit(this,'customer_name','${o.id}')">${escapeHtml(o.customer_name||'-')}</td>
@@ -162,6 +191,7 @@ function rebuildRow(tr, o) {
     <td class="editable" data-value="${o.status}" onclick="startEdit(this,'status','${o.id}',true)">
       <span class="status-badge ${statusClass(o.status)}">${o.status}</span>
     </td>
+    <td>${hasSlip ? `<span class="slip-link" onclick="openSlipModal('${o.id}')">👁 ดูสลิป</span>` : '-'}</td>
   `;
 }
 
@@ -205,7 +235,7 @@ async function loadOrders() {
 
     const tbody = document.getElementById('orderBody');
     if (orders.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="12" class="empty">ยังไม่มีออเดอร์</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="13" class="empty">ยังไม่มีออเดอร์</td></tr>';
     } else {
       tbody.innerHTML = '';
       orders.forEach(o => {
@@ -216,12 +246,68 @@ async function loadOrders() {
     }
     updatePaginationUI();
   } catch(e) {
-    document.getElementById('orderBody').innerHTML = '<tr><td colspan="12" class="loading">โหลดไม่สำเร็จ</td></tr>';
+    document.getElementById('orderBody').innerHTML = '<tr><td colspan="13" class="loading">โหลดไม่สำเร็จ</td></tr>';
   }
 }
 
 loadOrders();
 setInterval(loadOrders, 30000);
+
+let currentSlipOrderId = '';
+
+async function openSlipModal(orderId) {
+  currentSlipOrderId = orderId;
+  document.getElementById('slipModalOrderId').textContent = orderId;
+  document.getElementById('slipModalImage').style.display = 'none';
+  document.getElementById('slipModalNoImage').style.display = 'none';
+  document.getElementById('slipModalOcr').textContent = 'กำลังโหลด...';
+  document.getElementById('slipModalApproveBtn').style.display = 'inline-block';
+  document.getElementById('slipModal').classList.add('active');
+
+  try {
+    const res = await fetch(`/api/orders/${orderId}/slip`);
+    if (!res.ok) throw new Error('Failed');
+    const data = await res.json();
+
+    if (data.slip_image_base64) {
+      document.getElementById('slipModalImage').src = `data:image/png;base64,${data.slip_image_base64}`;
+      document.getElementById('slipModalImage').style.display = 'block';
+    } else {
+      document.getElementById('slipModalNoImage').style.display = 'block';
+    }
+
+    const conf = data.slip_ocr_confidence ? (data.slip_ocr_confidence * 100).toFixed(0) + '%' : '-';
+    const amt = data.slip_ocr_amount ? data.slip_ocr_amount.toFixed(2) + ' บาท' : '-';
+    document.getElementById('slipModalOcr').innerHTML =
+      `OCR ยอดเงิน: <b>${amt}</b> | ความมั่นใจ: <b>${conf}</b><br><small>ข้อความที่อ่านได้: ${escapeHtml(data.slip_ocr_raw || '-')}</small>`;
+  } catch (e) {
+    document.getElementById('slipModalOcr').textContent = 'โหลดข้อมูลไม่สำเร็จ';
+  }
+}
+
+function closeSlipModal() {
+  currentSlipOrderId = '';
+  document.getElementById('slipModal').classList.remove('active');
+}
+
+async function approveSlip() {
+  if (!currentSlipOrderId) return;
+  try {
+    const res = await fetch(`/api/orders/${currentSlipOrderId}`, {
+      method: 'PATCH',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({status: 'ยังไม่ส่ง'})
+    });
+    if (res.ok) {
+      closeSlipModal();
+      loadOrders();
+    } else {
+      alert('อนุมัติไม่สำเร็จ');
+    }
+  } catch (e) {
+    alert('อนุมัติไม่สำเร็จ');
+  }
+}
 </script>
 </body>
 </html>

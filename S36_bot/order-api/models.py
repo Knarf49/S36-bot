@@ -22,6 +22,10 @@ class Order(Base):
     price = Column(Float, default=0)
     tracking_number = Column(String, default='')
     status = Column(String, default='กำลังกรอกข้อมูลลงระบบ')
+    slip_image_path = Column(String, default='')
+    slip_ocr_amount = Column(Float, default=0)
+    slip_ocr_confidence = Column(Float, default=0)
+    slip_ocr_raw = Column(String(2000), default='')
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 

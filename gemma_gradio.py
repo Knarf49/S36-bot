@@ -1,5 +1,7 @@
 """gemma_gradio.py — Gradio chat UI for Gemma4 with streaming + tool-call loop"""
+import base64
 import json
+import mimetypes
 import os
 import sys
 import urllib.request
@@ -8,7 +10,7 @@ import gradio as gr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tools_agent import (
-    SYSTEM_PROMPT, MODEL, TOOLS, NUM_CTX, execute_tool,
+    SYSTEM_PROMPT, MODEL, TOOLS, NUM_CTX, execute_tool, set_pending_slip,
 )
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -18,7 +20,41 @@ TOOL_INFO_MAP = {
     'shipping_fee_calculator': 'กำลังคำนวณค่าส่ง...',
     'check_schedule': 'กำลังเช็คเวลาเปิดร้าน...',
     'get_shipping_status': 'กำลังค้นหาสถานะพัสดุ...',
+    'generate_promptpay_qr': 'กำลังสร้าง QR พร้อมเพย์...',
+    'verify_slip': 'กำลังตรวจสอบสลิปด้วย AI...',
+    'create_shipping_order': 'กำลังสร้างออเดอร์...',
 }
+
+
+def _encode_file(path):
+    try:
+        if not os.path.isfile(path):
+            return None
+        with open(path, 'rb') as f:
+            return base64.b64encode(f.read()).decode()
+    except Exception:
+        return None
+
+
+def _is_image_file(path):
+    if not path:
+        return False
+    ext = os.path.splitext(path)[1].lower()
+    if ext in ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp'):
+        return True
+    mime, _ = mimetypes.guess_type(path)
+    return bool(mime and mime.startswith('image/'))
+
+import re as _re_html
+_HTML_RE = _re_html.compile(r'<[^>]*>')
+_IMG_SRC_RE = _re_html.compile(r'src="data:image/[^"]+')
+
+
+def _clean_html(text):
+    if not text:
+        return text
+    text = _IMG_SRC_RE.sub('src="[QR_CODE]"', text)
+    return _HTML_RE.sub('', text)
 
 
 def stream_ollama(messages):
@@ -64,7 +100,10 @@ def stream_ollama(messages):
                     if chunk.get('done'):
                         break
         except Exception as e:
-            yield ("error", f"Ollama error: {e}")
+            if "Connection refused" in str(e) or "Errno 111" in str(e):
+                yield ("error", "ระบบปิดทำการอยู่ กรุณาลองใหม่อีกครั้งในช่วงเวลาเปิดทำการ")
+            else:
+                yield ("error", f"Ollama error: {e}")
             return
 
         if full_tool_calls:
@@ -80,6 +119,13 @@ def stream_ollama(messages):
                 info = TOOL_INFO_MAP.get(tool_name, 'กำลังดำเนินการ...')
                 yield ("tool", info)
                 tool_result = execute_tool(tc)
+
+                if tool_result and "QR_CODE:" in tool_result:
+                    import re as _re
+                    m = _re.search(r'QR_CODE:([A-Za-z0-9+/=]+)', tool_result)
+                    if m:
+                        yield ("qr", m.group(1))
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc['id'],
@@ -104,14 +150,44 @@ def chat_fn(message, history):
             role = h.get("role")
             content = h.get("content", "")
             if role in ("user", "assistant") and content:
-                messages.append({"role": role, "content": content})
+                content = _clean_html(content)
+                if content.strip():
+                    messages.append({"role": role, "content": content})
 
-        user_text = message if isinstance(message, str) else message.get("content", "")
-        if user_text and (not history or history[-1].get("content") != user_text):
-            messages.append({"role": "user", "content": user_text})
+        user_text = ""
+        files = []
+
+        if isinstance(message, dict):
+            user_text = message.get("text", "")
+            files = message.get("files", [])
+        elif isinstance(message, str):
+            user_text = message
+
+        if files:
+            image_b64 = None
+            for f in files:
+                if isinstance(f, dict):
+                    fpath = f.get("path", "")
+                else:
+                    fpath = f
+                if _is_image_file(fpath):
+                    image_b64 = _encode_file(fpath)
+                    break
+
+            if image_b64:
+                set_pending_slip(image_b64)
+                user_content = user_text or "ผู้ใช้ส่งสลิปการโอนเงินมาให้ตรวจสอบ"
+            else:
+                user_content = user_text
+        else:
+            user_content = user_text
+
+        if user_content and (not history or history[-1].get("content") != user_content):
+            messages.append({"role": "user", "content": user_content})
 
         response = ""
         tool_msgs = []
+        qr_base64 = None
         for status, data in stream_ollama(messages):
             if status == "token":
                 if tool_msgs:
@@ -119,10 +195,14 @@ def chat_fn(message, history):
                 response += data
                 yield response
             elif status == "tool":
+                if data.startswith("🔄 ") and "QR" in data:
+                    pass
                 tool_msgs.append(f"🔄 {data}")
                 yield "\n".join(tool_msgs)
+            elif status == "qr":
+                qr_base64 = data
             elif status == "error":
-                response += f"\n\n❌ {data}\n"
+                response += f"\n\n{data}\n"
                 yield response
             elif status == "thinking":
                 if not response and not tool_msgs:
@@ -131,6 +211,13 @@ def chat_fn(message, history):
                     pass
             elif status == "done":
                 pass
+
+        if qr_base64:
+            if response:
+                yield response
+            yield f'<div style="text-align:center;margin:10px 0;"><img src="data:image/png;base64,{qr_base64}" alt="PromptPay QR" style="max-width:280px;border-radius:8px;border:2px solid #e5e7eb;"/><br><small>สแกนเพื่อชำระเงิน</small></div>'
+            qr_base64 = None
+            return
 
         if not response and not tool_msgs:
             yield "ขออภัย ไม่สามารถประมวลผลได้ในขณะนี้"
@@ -153,5 +240,6 @@ if __name__ == "__main__":
         ],
         type="messages",
         theme="soft",
+        multimodal=True,
     )
     demo.launch(server_name="0.0.0.0", server_port=7860)

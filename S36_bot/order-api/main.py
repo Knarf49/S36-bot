@@ -8,6 +8,8 @@ from sqlalchemy import select, update, func
 from models import Base, Order, User
 from auth import hash_password, verify_password, create_access_token, verify_token
 from datetime import datetime
+import base64
+import os
 import re
 
 COURIER_SHORT = {
@@ -28,8 +30,22 @@ templates = Jinja2Templates(directory="/app/templates")
 async def lifespan(app: FastAPI):
     import os
     os.makedirs("/app/data", exist_ok=True)
+    os.makedirs("/app/data/slips", exist_ok=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        def _migrate(conn):
+            for col, typ in [
+                ("slip_image_path", "VARCHAR DEFAULT ''"),
+                ("slip_ocr_amount", "FLOAT DEFAULT 0"),
+                ("slip_ocr_confidence", "FLOAT DEFAULT 0"),
+                ("slip_ocr_raw", "VARCHAR(2000) DEFAULT ''"),
+            ]:
+                try:
+                    conn.exec_driver_sql(f"ALTER TABLE orders ADD COLUMN {col} {typ}")
+                except Exception:
+                    pass
+        await conn.run_sync(_migrate)
     async with async_session() as session:
         result = await session.execute(select(User).where(User.username == "admin"))
         if not result.scalar_one_or_none():
@@ -121,6 +137,8 @@ async def list_orders(request: Request, phone: str = Query(None), status: str = 
              "receiver_name": o.receiver_name, "receiver_phone": o.receiver_phone,
              "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
              "price": o.price, "tracking_number": o.tracking_number, "status": o.status,
+             "slip_image_path": o.slip_image_path, "slip_ocr_amount": o.slip_ocr_amount,
+             "slip_ocr_confidence": o.slip_ocr_confidence, "slip_ocr_raw": o.slip_ocr_raw,
              "created_at": str(o.created_at), "updated_at": str(o.updated_at)} for o in orders]
 
 
@@ -147,12 +165,45 @@ async def get_order(request: Request, order_id: str, db: AsyncSession = Depends(
     if not o:
         raise HTTPException(404, "Order not found")
 
+    slip_base64 = ""
+    if o.slip_image_path and os.path.isfile(o.slip_image_path):
+        try:
+            with open(o.slip_image_path, "rb") as f:
+                slip_base64 = base64.b64encode(f.read()).decode()
+        except Exception:
+            slip_base64 = ""
+
     return {"id": o.id, "customer_name": o.customer_name, "customer_phone": o.customer_phone,
             "pickup_address": o.pickup_address, "delivery_province": o.delivery_province,
             "receiver_name": o.receiver_name, "receiver_phone": o.receiver_phone,
             "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
             "price": o.price, "tracking_number": o.tracking_number, "status": o.status,
+            "slip_image_base64": slip_base64, "slip_ocr_amount": o.slip_ocr_amount,
+            "slip_ocr_confidence": o.slip_ocr_confidence, "slip_ocr_raw": o.slip_ocr_raw,
             "created_at": str(o.created_at), "updated_at": str(o.updated_at)}
+
+
+@app.get("/api/orders/{order_id}/slip")
+async def get_slip(request: Request, order_id: str, db: AsyncSession = Depends(get_db)):
+    username = get_current_user(request)
+    if not username:
+        raise HTTPException(401)
+
+    result = await db.execute(select(Order).where(Order.id == order_id))
+    o = result.scalar_one_or_none()
+    if not o:
+        raise HTTPException(404, "Order not found")
+
+    slip_base64 = ""
+    if o.slip_image_path and os.path.isfile(o.slip_image_path):
+        try:
+            with open(o.slip_image_path, "rb") as f:
+                slip_base64 = base64.b64encode(f.read()).decode()
+        except Exception:
+            slip_base64 = ""
+
+    return {"slip_image_base64": slip_base64, "slip_ocr_amount": o.slip_ocr_amount,
+            "slip_ocr_confidence": o.slip_ocr_confidence, "slip_ocr_raw": o.slip_ocr_raw}
 
 
 @app.patch("/api/orders/{order_id}")
@@ -175,7 +226,7 @@ async def update_order(request: Request, order_id: str, db: AsyncSession = Depen
             vals[field] = body[field]
 
     new_status = body.get("status")
-    if new_status and new_status in {"กำลังกรอกข้อมูลลงระบบ", "ยังไม่ส่ง", "กำลังจัดส่ง", "ส่งถึงแล้ว"}:
+    if new_status and new_status in {"กำลังกรอกข้อมูลลงระบบ", "ยังไม่ส่ง", "กำลังจัดส่ง", "ส่งถึงแล้ว", "รอตรวจสอบสลิป"}:
         vals["status"] = new_status
     elif new_status:
         raise HTTPException(400, f"Invalid status: {new_status}")
@@ -193,6 +244,8 @@ async def update_order(request: Request, order_id: str, db: AsyncSession = Depen
             "receiver_name": o.receiver_name, "receiver_phone": o.receiver_phone,
             "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
             "price": o.price, "tracking_number": o.tracking_number, "status": o.status,
+            "slip_image_path": o.slip_image_path, "slip_ocr_amount": o.slip_ocr_amount,
+            "slip_ocr_confidence": o.slip_ocr_confidence, "slip_ocr_raw": o.slip_ocr_raw,
             "created_at": str(o.created_at), "updated_at": str(o.updated_at)}
 
 
@@ -208,6 +261,23 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
     ts = datetime.now().strftime("%y%m%d%H%M%S")
     order_id = f"{short}{ts}"
 
+    slip_image_path = ""
+    slip_image_base64 = body.get("slip_image_base64", "")
+    if slip_image_base64:
+        try:
+            filepath = f"/app/data/slips/{order_id}.png"
+            with open(filepath, "wb") as f:
+                f.write(base64.b64decode(slip_image_base64))
+            slip_image_path = filepath
+        except Exception:
+            slip_image_path = ""
+
+    initial_status = "กำลังกรอกข้อมูลลงระบบ"
+    if slip_image_path:
+        initial_status = "รอตรวจสอบสลิป"
+    if body.get("status"):
+        initial_status = body["status"]
+
     order = Order(
         id=order_id,
         customer_name=body.get("customer_name", ""),
@@ -220,14 +290,19 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
         courier_code=courier_code,
         courier_name=body.get("courier_name", ""),
         price=body.get("price", 0),
-        status="กำลังกรอกข้อมูลลงระบบ",
+        status=initial_status,
+        slip_image_path=slip_image_path,
+        slip_ocr_amount=body.get("slip_ocr_amount", 0),
+        slip_ocr_confidence=body.get("slip_ocr_confidence", 0),
+        slip_ocr_raw=body.get("slip_ocr_raw", ""),
     )
     db.add(order)
     await db.commit()
     await db.refresh(order)
 
     return {"id": order.id, "courier_code": order.courier_code, "courier_name": order.courier_name,
-            "price": order.price, "status": order.status, "created_at": str(order.created_at)}
+            "price": order.price, "status": order.status, "slip_image_path": order.slip_image_path,
+            "created_at": str(order.created_at)}
 
 
 @app.api_route("/api/orders/lookup", methods=["GET"])
@@ -247,6 +322,7 @@ async def lookup_order(request: Request, q: str = Query(...), db: AsyncSession =
              "delivery_province": o.delivery_province, "receiver_name": o.receiver_name,
              "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
              "price": o.price, "status": o.status, "tracking_number": o.tracking_number,
+             "slip_ocr_amount": o.slip_ocr_amount, "slip_ocr_confidence": o.slip_ocr_confidence,
              "created_at": str(o.created_at)} for o in orders]
 
 
