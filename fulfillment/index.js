@@ -78,6 +78,16 @@ function policy(cr, wKg, w,l,h) {
   return f>ac?'d':'w';
 }
 
+function getExtraProfit(g) {
+  if (g < 100) return 10;
+  if (g <= 500) return 15;
+  if (g <= 900) return 20;
+  if (g <= 2000) return 25;
+  if (g <= 3000) return 30;
+  if (g <= 4000) return 35;
+  return 40;
+}
+
 function calcPrice(cr, prov, wKg, wCm, lCm, hCm) {
   const wN = Math.ceil(wCm*2)/2, lN = Math.ceil(lCm*2)/2, hN = Math.ceil(hCm*2)/2;
   if (cr==='DPTHAIPOST' && wN*lN*hN > 60000) return {price:null,rejected:true,reason:'ขนาดเกินไปรษณีย์ไทย (ปริมาตร > 60,000 cm³)'};
@@ -92,7 +102,8 @@ function calcPrice(cr, prov, wKg, wCm, lCm, hCm) {
   else {rows=zt.d;lk=fwSide(cr,wKg,wN,lN,hN);}
   const r = interp(rows,lk);
   if (!r) return {price:0,rejected:true,reason:'ไม่พบอัตราค่าส่ง'};
-  return {price:r.p,rejected:false};
+  const ep = getExtraProfit(Math.round(wKg*1000));
+  return {price:r.p+ep,rejected:false,extraProfit:ep};
 }
 
 function compareAll(cr, prov, wKg, wCm, lCm, hCm) {
@@ -190,3 +201,5 @@ exports.fulfillment = (req, res) => {
   else text = 'ขอโทษค่ะ ไม่เข้าใจคำถาม';
   res.json({ fulfillmentText: text });
 };
+
+Object.assign(exports, { compareAll, calcPrice, getExtraProfit, normProv, isOpen });

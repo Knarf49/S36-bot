@@ -488,10 +488,25 @@ function predictPolicy(courier, weightKg, chargeableWeight, wCm, lCm, hCm) {
   return estFW > actualCeil ? 'dimension' : 'weight';
 }
 
+// ── Profit tier ───────────────────────────────────────────────
+
+function getExtraProfit(weightGram) {
+  if (weightGram < 100) return 10;
+  if (weightGram <= 500) return 15;
+  if (weightGram <= 900) return 20;
+  if (weightGram <= 2000) return 25;
+  if (weightGram <= 3000) return 30;
+  if (weightGram <= 4000) return 35;
+  return 40;
+}
+
 // ── Public API ───────────────────────────────────────────────
 
 function calculatePrice(opts) {
-  const { courier, province, weightKg, extraProfit = 0 } = opts;
+  const { courier, province, weightKg, extraProfit } = opts;
+  const actualExtraProfit = extraProfit !== undefined
+    ? extraProfit
+    : getExtraProfit(Math.round(weightKg * 1000));
   const rawW = opts.widthCm, rawL = opts.lengthCm, rawH = opts.heightCm;
   // Normalize dims to .5 increments (ceil) for side-weight table accuracy
   const w = Math.ceil(rawW * 2) / 2;
@@ -539,7 +554,7 @@ function calculatePrice(opts) {
 
   const gasFee = 3;
   const basePrice = lookup.price;
-  const finalPrice = basePrice + extraProfit;
+  const finalPrice = basePrice + actualExtraProfit;
 
   return {
     price: finalPrice,
@@ -556,7 +571,7 @@ function calculatePrice(opts) {
       cost: lookup.cost,
       gas_fee: gasFee,
       platform_markup: basePrice - lookup.cost,
-      extra_profit: extraProfit,
+      extra_profit: actualExtraProfit,
       base_price: basePrice,
       final_price: finalPrice,
       interpolated: !lookup.exact,
@@ -575,7 +590,7 @@ function normalizeDim(cm) {
   return Math.ceil(cm * 2) / 2;
 }
 
-module.exports = { calculatePrice, compareAllCouriers, getZone, computeChargeableWeight, normalizeDim };
+module.exports = { calculatePrice, compareAllCouriers, getZone, computeChargeableWeight, normalizeDim, getExtraProfit };
 
 // ── CLI self-test ────────────────────────────────────────────
 if (require.main === module) {
