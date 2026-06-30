@@ -40,6 +40,7 @@ async def lifespan(app: FastAPI):
                 ("slip_ocr_amount", "FLOAT DEFAULT 0"),
                 ("slip_ocr_confidence", "FLOAT DEFAULT 0"),
                 ("slip_ocr_raw", "VARCHAR(2000) DEFAULT ''"),
+                ("receiver_address", "VARCHAR DEFAULT ''"),
             ]:
                 try:
                     conn.exec_driver_sql(f"ALTER TABLE orders ADD COLUMN {col} {typ}")
@@ -135,6 +136,7 @@ async def list_orders(request: Request, phone: str = Query(None), status: str = 
     return [{"id": o.id, "customer_name": o.customer_name, "customer_phone": o.customer_phone,
              "pickup_address": o.pickup_address, "delivery_province": o.delivery_province,
              "receiver_name": o.receiver_name, "receiver_phone": o.receiver_phone,
+             "receiver_address": o.receiver_address,
              "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
              "price": o.price, "tracking_number": o.tracking_number, "status": o.status,
              "slip_image_path": o.slip_image_path, "slip_ocr_amount": o.slip_ocr_amount,
@@ -176,6 +178,7 @@ async def get_order(request: Request, order_id: str, db: AsyncSession = Depends(
     return {"id": o.id, "customer_name": o.customer_name, "customer_phone": o.customer_phone,
             "pickup_address": o.pickup_address, "delivery_province": o.delivery_province,
             "receiver_name": o.receiver_name, "receiver_phone": o.receiver_phone,
+            "receiver_address": o.receiver_address,
             "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
             "price": o.price, "tracking_number": o.tracking_number, "status": o.status,
             "slip_image_base64": slip_base64, "slip_ocr_amount": o.slip_ocr_amount,
@@ -218,6 +221,7 @@ async def update_order(request: Request, order_id: str, db: AsyncSession = Depen
     editable_fields = [
         "customer_name", "customer_phone", "pickup_address",
         "delivery_province", "receiver_name", "receiver_phone",
+        "receiver_address",
         "weight_kg", "courier_code", "courier_name", "price",
         "tracking_number",
     ]
@@ -242,6 +246,7 @@ async def update_order(request: Request, order_id: str, db: AsyncSession = Depen
     return {"id": o.id, "customer_name": o.customer_name, "customer_phone": o.customer_phone,
             "pickup_address": o.pickup_address, "delivery_province": o.delivery_province,
             "receiver_name": o.receiver_name, "receiver_phone": o.receiver_phone,
+            "receiver_address": o.receiver_address,
             "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
             "price": o.price, "tracking_number": o.tracking_number, "status": o.status,
             "slip_image_path": o.slip_image_path, "slip_ocr_amount": o.slip_ocr_amount,
@@ -286,6 +291,7 @@ async def create_order(request: Request, db: AsyncSession = Depends(get_db)):
         delivery_province=body.get("delivery_province", ""),
         receiver_name=body.get("receiver_name", ""),
         receiver_phone=body.get("receiver_phone", ""),
+        receiver_address=body.get("receiver_address", ""),
         weight_kg=body.get("weight_kg", 0),
         courier_code=courier_code,
         courier_name=body.get("courier_name", ""),
@@ -320,6 +326,7 @@ async def lookup_order(request: Request, q: str = Query(...), db: AsyncSession =
 
     return [{"id": o.id, "customer_name": o.customer_name, "customer_phone": o.customer_phone,
              "delivery_province": o.delivery_province, "receiver_name": o.receiver_name,
+             "receiver_address": o.receiver_address,
              "weight_kg": o.weight_kg, "courier_code": o.courier_code, "courier_name": o.courier_name,
              "price": o.price, "status": o.status, "tracking_number": o.tracking_number,
              "slip_ocr_amount": o.slip_ocr_amount, "slip_ocr_confidence": o.slip_ocr_confidence,
@@ -337,6 +344,7 @@ async def public_lookup(q: str = Query(...), db: AsyncSession = Depends(get_db))
 
     return [{"id": o.id, "customer_name": o.customer_name,
              "receiver_name": o.receiver_name,
+             "receiver_address": o.receiver_address,
              "delivery_province": o.delivery_province,
              "courier_name": o.courier_name, "price": o.price,
              "status": o.status, "tracking_number": o.tracking_number,

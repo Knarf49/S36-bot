@@ -19,15 +19,17 @@ OLLAMA_URL = f"{OLLAMA_HOST}/v1/chat/completions"
 OLLAMA_NATIVE_URL = f"{OLLAMA_HOST}/api/chat"
 DASHBOARD_URL = os.getenv("ORDER_API_URL", "http://localhost:8000")
 PROMPTPAY_PHONE = os.getenv("PROMPTPAY_PHONE", "")
-RECIPIENT_NAME = os.getenv("RECIPIENT_NAME", "")
 MODEL = "gemma4:e4b"
 NUM_CTX = 12288
 TEST_MODE = os.getenv("TEST_MODE", "").lower() in ("1", "true", "yes")
+SLIP2GO_API_KEY = os.getenv("SLIP2GO_API_KEY", "")
+SLIP2GO_API_URL = "https://connect.slip2go.com/api/verify-slip/qr-image/info"
 
 _pending_slip_base64 = None  # global default (backward compat, gemma_gradio.py)
 _qr_generated_at = None
 _user_slips = {}  # { user_id: base64 }
 _user_qr_times = {}  # { user_id: datetime }
+_qr_image_cache = {}  # { amount: base64 }
 
 
 def set_pending_slip(b64, user_id=None):
@@ -65,6 +67,14 @@ def get_qr_generated_at(user_id=None):
     if user_id is not None:
         return _user_qr_times.get(user_id)
     return _qr_generated_at
+
+
+def get_cached_qr(amount=None):
+    if amount is not None and amount in _qr_image_cache:
+        return _qr_image_cache[amount]
+    if _qr_image_cache:
+        return list(_qr_image_cache.values())[-1]
+    return None
 
 # ═══════════════════════════════════════════════════════════════════
 # 1. Rate tables (ported from rate_calculator.cjs)
@@ -631,235 +641,212 @@ def generate_promptpay_qr_base64(phone, amount):
     return base64.b64encode(buf.read()).decode(), None
 
 
-def ocr_slip(image_base64):
+def verify_slip_via_slip2go(image_base64, expected_amount, user_id=None):
+    if not SLIP2GO_API_KEY:
+        return {"success": False, "reason": "SLIP2GO_API_KEY not configured",
+                "code": "no_api_key", "amount": 0, "dateTime": "", "referenceId": "",
+                "sender_name": "", "sender_bank": "", "receiver_name": "", "receiver_bank": "",
+                "transRef": "", "message": "", "fraud": False, "duplicate": False,
+                "amount_mismatch": False, "receiver_mismatch": False}
+
     try:
+        if image_base64.startswith("data:"):
+            image_base64 = image_base64.split(",", 1)[-1]
         img_bytes = base64.b64decode(image_base64)
     except Exception as e:
-        return {"amount": 0, "confidence": 0, "raw_text": "", "error": f"decode image failed: {e}"}
+        return {"success": False, "reason": f"Base64 decode failed: {e}",
+                "code": "api_error", "amount": 0, "dateTime": "", "referenceId": "",
+                "sender_name": "", "sender_bank": "", "receiver_name": "", "receiver_bank": "",
+                "transRef": "", "message": str(e), "fraud": False, "duplicate": False,
+                "amount_mismatch": False, "receiver_mismatch": False}
+
+    import uuid
+    boundary = uuid.uuid4().hex
+
+    payload_json = json.dumps({
+        "checkDuplicate": True,
+        "checkAmount": {"type": "eq", "amount": str(int(expected_amount))},
+    }, ensure_ascii=False)
+
+    body = b''
+    body += f'--{boundary}\r\n'.encode()
+    body += b'Content-Disposition: form-data; name="file"; filename="slip.jpg"\r\n'
+    body += b'Content-Type: image/jpeg\r\n\r\n'
+    body += img_bytes
+    body += b'\r\n'
+    body += f'--{boundary}\r\n'.encode()
+    body += b'Content-Disposition: form-data; name="payload"\r\n'
+    body += b'Content-Type: application/json\r\n\r\n'
+    body += payload_json.encode('utf-8')
+    body += b'\r\n'
+    body += f'--{boundary}--\r\n'.encode()
 
     try:
-        from PIL import Image
-        img = Image.open(io.BytesIO(img_bytes))
-    except Exception:
-        return {"amount": 0, "confidence": 0, "raw_text": "", "error": "cannot open image"}
-
-    qr_result = _decode_qr(img)
-    typhoon_result = _ocr_typhoon(image_base64)
-
-    if typhoon_result and typhoon_result.get('amount', 0) > 0:
-        if qr_result.get('ref'):
-            typhoon_result['ref'] = qr_result['ref']
-            typhoon_result['has_qr'] = True
-        return typhoon_result
-
-    if qr_result.get('ref') and typhoon_result:
-        return typhoon_result
-
-    if typhoon_result and typhoon_result.get('amount', 0) > 0:
-        return typhoon_result
-
-    return {"amount": 0, "confidence": 0, "raw_text": "", "error": "ไม่สามารถอ่านสลิปได้"}
-
-
-def _decode_qr(pil_image):
-    try:
-        from pyzbar.pyzbar import decode as zbar_decode
-    except ImportError:
-        return {}
-
-    try:
-        decoded = zbar_decode(pil_image)
-    except Exception:
-        return {}
-
-    for d in decoded:
-        if d.type not in ('QRCODE',):
-            continue
-        data = d.data.decode('utf-8', errors='replace').strip()
-        result = _parse_qr_data(data)
-        if result.get("amount"):
-            return result
-
-    return {}
-
-
-def _parse_qr_data(data):
-    if data.startswith('{'):
-        try:
-            obj = json.loads(data)
-            ref = obj.get('ref1', '') or obj.get('ref2', '') or obj.get('reference', '')
-            return {"amount": 0, "ref": str(ref), "raw": data}
-        except json.JSONDecodeError:
-            pass
-    if '|' in data:
-        parts = dict(p.split('=', 1) for p in data.split('|') if '=' in p)
-        ref = parts.get('ref', parts.get('ref1', ''))
-        return {"amount": 0, "ref": ref, "raw": data}
-
-    ref_match = re.search(r'[A-Za-z0-9]{15,30}', data)
-    return {"amount": 0, "ref": ref_match.group(0) if ref_match else "", "raw": data}
-
-
-def _ocr_typhoon(image_base64):
-    api_key = os.getenv("TYPHOON_API_KEY", "").strip()
-    if not api_key:
-        return None
-
-    try:
-        body = json.dumps({
-            "model": "typhoon-ocr-preview",
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Read this bank payment slip in Thai. Extract: 1) the transaction amount (จำนวนเงิน) as a number, 2) the recipient name (ชื่อผู้รับโอน/ไปยัง), 3) the transfer date and time (วันที่และเวลาโอน) in ISO 8601 format (YYYY-MM-DDTHH:MM:SS). Return only these values."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_base64}"}}
-                ]
-            }],
-            "max_tokens": 1024,
-            "temperature": 0.1,
-        }).encode('utf-8')
-
-        req = urllib.request.Request(
-            "https://api.opentyphoon.ai/v1/chat/completions",
-            data=body,
-            method='POST',
-            headers={
-                'Content-Type': 'application/json',
-                'Authorization': f'Bearer {api_key}',
-            }
-        )
+        req = urllib.request.Request(SLIP2GO_API_URL, data=body, method='POST')
+        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+        req.add_header('Authorization', f'Bearer {SLIP2GO_API_KEY}')
         with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.loads(resp.read())
-
-        content = data.get('choices', [{}])[0].get('message', {}).get('content', '')
-        return _parse_typhoon_response(content)
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        try: body_text = e.read().decode()[:500]
+        except: pass
+        return {"success": False, "reason": f"Slip2Go HTTP {e.code}: {e.reason}",
+                "code": f"http_{e.code}", "amount": 0, "dateTime": "", "referenceId": "",
+                "sender_name": "", "sender_bank": "", "receiver_name": "", "receiver_bank": "",
+                "transRef": "", "message": body_text, "fraud": False, "duplicate": False,
+                "amount_mismatch": False, "receiver_mismatch": False}
     except Exception as e:
-        return {"amount": 0, "confidence": 0, "raw_text": str(e), "error": f"Typhoon API error: {e}"}
+        return {"success": False, "reason": f"Slip2Go API error: {e}",
+                "code": "api_error", "amount": 0, "dateTime": "", "referenceId": "",
+                "sender_name": "", "sender_bank": "", "receiver_name": "", "receiver_bank": "",
+                "transRef": "", "message": str(e), "fraud": False, "duplicate": False,
+                "amount_mismatch": False, "receiver_mismatch": False}
 
+    code = result.get("code", "")
+    data = result.get("data", {})
+    amount = data.get("amount", 0) or result.get("amount", 0)
+    date_time = data.get("dateTime", "") or result.get("dateTime", "")
+    reference_id = data.get("referenceId", "") or result.get("referenceId", "")
+    trans_ref = data.get("transRef", "") or result.get("transRef", "")
+    sender = data.get("sender", {}) or {}
+    receiver = data.get("receiver", {}) or {}
+    sender_name = (sender.get("account", {}).get("name", "")) or (sender.get("name", ""))
+    sender_bank = (sender.get("bank", {}).get("name", "")) or (sender.get("bankName", ""))
+    receiver_name = (receiver.get("account", {}).get("name", "")) or (receiver.get("name", ""))
+    receiver_bank = (receiver.get("bank", {}).get("name", "")) or (receiver.get("bankName", ""))
 
-def _extract_datetime(text):
-    if not isinstance(text, str):
-        return None
+    is_duplicate = code == "200501" or "duplicate" in str(result).lower()
+    amount_ok = abs(amount - expected_amount) <= max(expected_amount * 0.05, 1) if amount else False
+    success = bool(amount and amount_ok and not is_duplicate)
 
-    thai_months = {
-        'ม\\.?ค\\.?|มกราคม': 1, 'ก\\.?พ\\.?|กุมภาพันธ์': 2, 'มี\\.?ค\\.?|มีนาคม': 3,
-        'เม\\.?ย\\.?|เมษายน': 4, 'พ\\.?ค\\.?|พฤษภาคม': 5, 'มิ\\.?ย\\.?|มิถุนายน': 6,
-        'ก\\.?ค\\.?|กรกฎาคม': 7, 'ส\\.?ค\\.?|สิงหาคม': 8, 'ก\\.?ย\\.?|กันยายน': 9,
-        'ต\\.?ค\\.?|ตุลาคม': 10, 'พ\\.?ย\\.?|พฤศจิกายน': 11, 'ธ\\.?ค\\.?|ธันวาคม': 12,
+    if PROMPTPAY_PHONE and receiver:
+        recv_account = receiver.get("account", {})
+        recv_proxy = recv_account.get("proxy", {})
+        recv_number = (recv_account.get("number", "")
+                       or recv_account.get("accountNumber", "")
+                       or recv_proxy.get("account", ""))
+        phone_clean = PROMPTPAY_PHONE.replace('-', '').replace(' ', '')
+        recv_clean = recv_number.replace('-', '').replace(' ', '').replace('x', '')
+        receiver_ok = phone_clean[-4:] in recv_clean or phone_clean in recv_clean
+    else:
+        receiver_ok = True
+
+    return {
+        "success": success and receiver_ok,
+        "code": code,
+        "amount": float(amount) if amount else 0,
+        "dateTime": date_time,
+        "sender_name": sender_name,
+        "sender_bank": sender_bank,
+        "receiver_name": receiver_name,
+        "receiver_bank": receiver_bank,
+        "referenceId": reference_id,
+        "transRef": trans_ref,
+        "message": result.get("message", ""),
+        "fraud": code == "200500",
+        "duplicate": is_duplicate,
+        "amount_mismatch": not amount_ok,
+        "receiver_mismatch": not receiver_ok,
+        "reason": result.get("message", ""),
     }
-    time_pat = r'(\d{1,2})[:.](\d{2})(?:[:.](\d{2}))?'
 
-    iso_m = re.search(r'(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2}))?', text)
-    if iso_m:
+
+
+def handle_slip_verification_direct(image_b64, expected_amount, user_id, sess):
+    if not sess.delivery_province or not sess.weight_kg:
+        return "ไม่พบข้อมูลจังหวัดหรือน้ำหนัก กรุณาเริ่มรายการใหม่"
+
+    r = verify_slip_via_slip2go(image_b64, expected_amount, user_id)
+
+    if r["code"] == "no_api_key":
+        return "SLIP2GO_API_KEY ไม่ได้ตั้งค่า กรุณาติดต่อผู้ดูแลระบบ"
+    if r["code"].startswith("http_") or r["code"] == "api_error":
+        return f"SLIP_VERIFY_ERROR: {r['reason']}"
+
+    transfer_stamp = f"SLIP_TRANSFER_DATETIME:{r['dateTime']}" if r.get("dateTime") else "SLIP_TRANSFER_DATETIME:"
+
+    time_ok = True
+    time_reason = ""
+    if r.get("dateTime"):
         try:
-            parts = [int(g) for g in iso_m.groups() if g]
-            if len(parts) == 5:
-                return datetime(*parts)
-            return datetime(parts[0], parts[1], parts[2], parts[3], parts[4], parts[5])
-        except (ValueError, TypeError):
+            transfer_dt = datetime.fromisoformat(r["dateTime"].replace("Z", "+00:00"))
+            qr_dt = get_qr_generated_at(user_id)
+            if qr_dt and transfer_dt < qr_dt:
+                time_ok = False
+                time_reason = f"เวลาบนสลิปก่อนสร้าง QR"
+        except:
             pass
 
-    m = re.search(r'(\d{1,2})\s*/\s*(\d{1,2})\s*/\s*(\d{4})', text)
-    if m:
-        d, mo, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if y > 2500:
-            y -= 543
-        try:
-            dt_val = datetime(y, mo, d)
-            tm = re.search(time_pat, text[m.end():])
-            if tm:
-                h, mi, s = int(tm.group(1)), int(tm.group(2)), int(tm.group(3) or 0)
-                dt_val = dt_val.replace(hour=h, minute=mi, second=s)
-            return dt_val
-        except (ValueError, TypeError):
-            pass
+    if r["success"] and time_ok:
+        ocr_token = f"SLIP_OCR_AMOUNT:{r['amount']}|SLIP_OCR_CONFIDENCE:1.0|SLIP_OCR_RAW:slip2go_verified|{transfer_stamp}"
+        order_args = {
+            "customer_name": sess.sender or "",
+            "customer_phone": sess.sender_phone or "",
+            "pickup_address": (
+                f"{sess.sender_subdistrict} {sess.sender_district} {sess.sender_province} {sess.sender_zip}"
+                if sess.sender_subdistrict else sess.sender_addr or ""
+            ),
+            "delivery_province": sess.delivery_province,
+            "receiver_name": sess.receiver or "",
+            "receiver_phone": sess.receiver_phone or "",
+            "receiver_address": (
+                f"{sess.receiver_subdistrict} {sess.receiver_district} {sess.receiver_province} {sess.receiver_zip}"
+                if sess.receiver_subdistrict else sess.receiver_addr or ""
+            ),
+            "weight_kg": sess.weight_kg,
+            "courier_code": sess.selected_courier or "",
+            "courier_name": COURIER_NAMES.get(sess.selected_courier, ""),
+            "price": sess.quoted_prices.get(sess.selected_courier, 0),
+            "slip_image_base64": image_b64,
+            "slip_ocr_amount": r["amount"],
+            "slip_ocr_confidence": 1.0,
+            "slip_ocr_raw": "slip2go_verified",
+            "slip_transfer_datetime": r.get("dateTime", ""),
+        }
+        missing = []
+        for k, v in order_args.items():
+            if k in ("slip_transfer_datetime",): continue
+            if isinstance(v, (int, float)) and v <= 0:
+                missing.append(k)
+            elif isinstance(v, str) and not v:
+                missing.append(k)
+        if missing:
+            return f"ข้อมูลไม่ครบ กรุณาระบุ: {', '.join(missing)}"
 
-    for pat, mon in thai_months.items():
-        full_pat = rf'(\d{{1,2}})\s+(?:{pat})\s+(\d{{4}})'
-        m = re.search(full_pat, text)
-        if m:
-            d, y = int(m.group(1)), int(m.group(2))
-            if y > 2500:
-                y -= 543
-            try:
-                dt_val = datetime(y, mon, d)
-                tm = re.search(time_pat, text[m.end():])
-                if tm:
-                    h, mi, s = int(tm.group(1)), int(tm.group(2)), int(tm.group(3) or 0)
-                    dt_val = dt_val.replace(hour=h, minute=mi, second=s)
-                return dt_val
-            except (ValueError, TypeError):
-                pass
+        order_result = execute_tool({
+            "function": {"name": "create_shipping_order", "arguments": order_args}
+        }, user_id)
 
-    return None
-
-
-def _parse_typhoon_response(content):
-    if isinstance(content, list):
-        content = ' '.join(
-            item.get('text', '') if isinstance(item, dict) else str(item)
-            for item in content
+        return (
+            f"✅ ตรวจสอบสลิปเรียบร้อย!\n"
+            f"ยอด: {r['amount']:.0f} บาท จาก {r['sender_name']}\n"
+            f"ธนาคาร: {r['sender_bank']}\n"
+            f"เวลา: {r['dateTime']}\n\n"
+            f"{order_result}"
         )
-    elif not isinstance(content, str):
-        content = str(content)
 
-    text_to_search = content
-    transfer_dt = _extract_datetime(content)
-    transfer_str = transfer_dt.isoformat() if transfer_dt else None
+    reasons = []
+    if r["amount_mismatch"]:
+        reasons.append(f"ยอดเงินไม่ตรง (ตรวจพบ {r['amount']:.0f} vs {expected_amount:.0f})")
+    if r["receiver_mismatch"]:
+        reasons.append("บัญชีผู้รับไม่ตรง")
+    if r["fraud"]:
+        reasons.append("สลิปปลอม")
+    if r["duplicate"]:
+        reasons.append("สลิปซ้ำ")
+    if not time_ok:
+        reasons.append(time_reason)
+    if not reasons:
+        reasons.append("ไม่พบข้อมูลสลิป")
 
-    try:
-        obj = json.loads(content)
-        if isinstance(obj, dict):
-            if 'natural_text' in obj:
-                text_to_search = obj['natural_text']
-                if not transfer_dt:
-                    transfer_dt = _extract_datetime(text_to_search)
-                    transfer_str = transfer_dt.isoformat() if transfer_dt else None
-            elif 'amount' in obj and isinstance(obj['amount'], (int, float)):
-                return {"amount": float(obj['amount']), "confidence": 0.85,
-                        "raw_text": content[:500], "source": "typhoon",
-                        "transfer_datetime": transfer_str}
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
-
-    patterns = [
-        r'จำนวนเงิน\s*[:\-\s]*\s*([\d,]+\.?\d+)',
-        r'Amount\s*[:\-\s]*\s*([\d,]+\.?\d+)',
-        r'[\u0E3F฿]\s*([\d,]+\.?\d+)',
-        r'([\d,]+\.?\d+)\s*บาท',
-    ]
-    for p in patterns:
-        m = re.search(p, text_to_search, re.IGNORECASE)
-        if m:
-            try:
-                return {"amount": float(m.group(1).replace(',', '')),
-                        "confidence": 0.85, "raw_text": text_to_search[:500], "source": "typhoon",
-                        "transfer_datetime": transfer_str}
-            except ValueError:
-                continue
-
-    prefix = text_to_search.split('จำนวนเงิน')
-    if len(prefix) > 1:
-        amounts = re.findall(r'([\d,]+\.?\d{2})', prefix[-1])
-        if amounts:
-            try:
-                return {"amount": float(amounts[0].replace(',', '')),
-                        "confidence": 0.7, "raw_text": text_to_search[:500], "source": "typhoon",
-                        "transfer_datetime": transfer_str}
-            except ValueError:
-                pass
-
-    amounts = re.findall(r'([\d,]+\.?\d{2})', text_to_search)
-    if amounts:
-        try:
-            return {"amount": float(amounts[0].replace(',', '')),
-                    "confidence": 0.3, "raw_text": text_to_search[:500], "source": "typhoon",
-                    "transfer_datetime": transfer_str}
-        except ValueError:
-            pass
-
-    return {"amount": 0.0, "confidence": 0.2, "raw_text": text_to_search[:500], "source": "typhoon",
-            "transfer_datetime": transfer_str}
+    return (
+        f"⚠️ {'; '.join(reasons)}\n"
+        f"ยอดที่ตรวจพบ: {r['amount']:.0f} บาท\n"
+        f"จาก: {r['sender_name']} | {r['sender_bank']}\n"
+        f"เวลา: {r['dateTime']}\n"
+        f"ลองส่งสลิปใหม่ หรือพิม 'ออก' เพื่อยกเลิก"
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -927,9 +914,9 @@ TOOLS = [
             "name": "shipping_fee_calculator",
             "description": (
                 "Compare shipping fees across all couriers (Kerry, Thai Post, Flash, Shopee, DHL, Flash Bulky) "
-                "for sending a package to a Thai province. Extract province and weight_kg from user message. "
-                "Call this tool immediately when user provides both. "
-                "Only ask the user for province or weight if they are missing from the message."
+                "for sending a package to a Thai province. Extract province, weight_kg, and box dimensions (width_cm, length_cm, height_cm) from user message. "
+                "Call this tool immediately when user provides all three. "
+                "Always ask for weight (kg) AND box size (กว้างxยาวxสูง cm) when missing."
             ),
             "parameters": {
                 "type": "object",
@@ -944,15 +931,15 @@ TOOLS = [
                     },
                     "width_cm": {
                         "type": "number",
-                        "description": "Box width in centimeters (optional, estimated from weight if not provided)"
+                        "description": "Box width in cm — ask user if not provided"
                     },
                     "length_cm": {
                         "type": "number",
-                        "description": "Box length in centimeters (optional)"
+                        "description": "Box length in cm — ask user if not provided"
                     },
                     "height_cm": {
                         "type": "number",
-                        "description": "Box height in centimeters (optional)"
+                        "description": "Box height in cm — ask user if not provided"
                     },
                 },
                 "required": ["province", "weight_kg"],
@@ -1157,6 +1144,12 @@ def execute_tool(tool_call, user_id=None):
                 lines.append(f"  - {r['courier_name']}: {r['price']} บาท{mark}")
                 prices[r['courier_code']] = r['price']
         price_entries = ",".join(f"{c}={p}" for c,p in prices.items())
+        if user_id:
+            from session_state import get_session, save_session
+            sess = get_session(user_id)
+            sess.delivery_province = province
+            sess.weight_kg = weight_kg
+            save_session(user_id, sess)
         return '\n'.join(lines) + f"\n__PRICES:{price_entries}__"
     elif name == 'check_schedule':
         open_now, day_name, ts, rng = is_open()
@@ -1225,6 +1218,11 @@ def execute_tool(tool_call, user_id=None):
         except Exception as e:
             return f"สร้างออเดอร์ไม่สำเร็จ: {e}"
     elif name == 'generate_promptpay_qr':
+        if user_id:
+            from session_state import get_session as _gs, needs_qr as _nq
+            s = _gs(user_id)
+            if not _nq(s):
+                return "ERROR: ข้อมูลลูกค้ายังไม่ครบ ไม่สามารถสร้าง QR ได้ กรุณาถามข้อมูลที่ขาดก่อน"
         amount = float(args.get('amount', 0))
         if amount <= 0:
             return "กรุณาระบุยอดเงินที่ถูกต้อง"
@@ -1232,7 +1230,8 @@ def execute_tool(tool_call, user_id=None):
         if error:
             return f"สร้าง QR ไม่สำเร็จ: {error}"
         set_qr_generated_at(datetime.now(), user_id)
-        return f"QR_CODE:{qr_base64}|AMOUNT:{amount}"
+        _qr_image_cache[amount] = qr_base64
+        return f"QR_CODE:[image_data]|AMOUNT:{amount}"
     elif name == 'verify_slip':
         image_b64 = args.get('image_base64', '')
         if not image_b64 or len(image_b64) < 100 or image_b64.startswith('['):
@@ -1250,28 +1249,20 @@ def execute_tool(tool_call, user_id=None):
                 f"SLIP_OCR_AMOUNT:{expected}|SLIP_OCR_CONFIDENCE:1.0|SLIP_OCR_RAW:test_mode|SLIP_TRANSFER_DATETIME:"
             )
 
-        result = ocr_slip(image_b64)
-        if result.get('error'):
-            return f"OCR_FAILED:{result['error']}"
+        r = verify_slip_via_slip2go(image_b64, expected, user_id)
 
-        ocr_amt = result['amount']
-        conf = result['confidence']
-        raw = result['raw_text']
-        transfer_str = result.get('transfer_datetime', '')
+        if r["code"] == "no_api_key":
+            return "SLIP2GO_API_KEY ไม่ได้ตั้งค่า กรุณาติดต่อผู้ดูแลระบบ"
+        if r["code"].startswith("http_") or r["code"] == "api_error":
+            return f"SLIP_VERIFY_ERROR: {r['reason']}"
 
-        tolerance = max(expected * 0.1, 5)
-        amount_ok = abs(ocr_amt - expected) <= tolerance and conf >= 0.3
-
-        recipient_ok = True
-        if RECIPIENT_NAME:
-            name_keywords = RECIPIENT_NAME.split()
-            recipient_ok = any(kw in raw for kw in name_keywords if len(kw) >= 3)
+        transfer_stamp = f"SLIP_TRANSFER_DATETIME:{r['dateTime']}" if r.get("dateTime") else "SLIP_TRANSFER_DATETIME:"
 
         time_ok = True
         time_reason = ""
-        if transfer_str:
+        if r.get("dateTime"):
             try:
-                transfer_dt = datetime.fromisoformat(transfer_str)
+                transfer_dt = datetime.fromisoformat(r["dateTime"].replace("Z", "+00:00"))
                 qr_dt = get_qr_generated_at(user_id)
                 if qr_dt and transfer_dt < qr_dt:
                     time_ok = False
@@ -1282,31 +1273,44 @@ def execute_tool(tool_call, user_id=None):
             except (ValueError, TypeError):
                 pass
 
-        transfer_token = f"SLIP_TRANSFER_DATETIME:{transfer_str}" if transfer_str else "SLIP_TRANSFER_DATETIME:"
-
-        if amount_ok and recipient_ok and time_ok:
+        if r["success"] and time_ok:
             return (
                 f"VERIFIED_OK\n"
-                f"ยอดที่ตรวจพบ: {ocr_amt:.2f} บาท (คาดหวัง {expected:.2f} บาท)\n"
-                f"ความมั่นใจ OCR: {conf:.0%}\n"
-                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}|{transfer_token}"
+                f"ยอดที่ตรวจพบ: {r['amount']:.2f} บาท (คาดหวัง {expected:.2f} บาท)\n"
+                f"จาก: {r['sender_name']} | ธนาคาร: {r['sender_bank']}\n"
+                f"ไปยัง: {r['receiver_name']} | ธนาคาร: {r['receiver_bank']}\n"
+                f"เวลาโอน: {r['dateTime']}\n"
+                f"Ref: {r['referenceId']}\n"
+                f"SLIP_OCR_AMOUNT:{r['amount']}|SLIP_OCR_CONFIDENCE:1.0|SLIP_OCR_RAW:slip2go_verified|{transfer_stamp}"
             )
-        else:
-            reasons = []
-            if not amount_ok:
-                reasons.append(f"ยอดเงินไม่ตรง ({ocr_amt:.2f} vs {expected:.2f})")
-            if not recipient_ok:
-                reasons.append("ไม่พบบัญชีปลายทางที่ถูกต้อง")
-            if not time_ok:
-                reasons.append(time_reason)
-            return (
-                f"VERIFIED_PENDING\n"
-                f"⚠️ {', '.join(reasons)}\n"
-                f"ยอดที่ตรวจพบ: {ocr_amt:.2f} บาท\n"
-                f"ความมั่นใจ OCR: {conf:.0%}\n"
-                f"ระบบจะส่งให้ admin ตรวจสอบอีกครั้ง\n"
-                f"SLIP_OCR_AMOUNT:{ocr_amt}|SLIP_OCR_CONFIDENCE:{conf}|SLIP_OCR_RAW:{raw[:500]}|{transfer_token}"
-            )
+
+        reasons = []
+        if r["amount_mismatch"]:
+            reasons.append(f"ยอดเงินไม่ตรง (ตรวจพบ {r['amount']:.2f} vs คาดหวัง {expected:.2f})")
+        if r["receiver_mismatch"]:
+            reasons.append("บัญชีผู้รับไม่ตรงกับที่ตั้งไว้")
+        if r["fraud"]:
+            reasons.append("ตรวจพบสลิปปลอม")
+        if r["duplicate"]:
+            reasons.append("สลิปถูกใช้แล้ว (ซ้ำ)")
+        if r["code"] == "200404":
+            reasons.append("ไม่พบข้อมูลสลิปในระบบธนาคาร")
+        if not time_ok:
+            reasons.append(time_reason)
+        if not reasons:
+            reasons.append(f"สถานะจาก Slip2Go: {r['message']}")
+
+        return (
+            f"VERIFIED_PENDING\n"
+            f"⚠️ {', '.join(reasons)}\n"
+            f"ยอดที่ตรวจพบ: {r['amount']:.2f} บาท\n"
+            f"จาก: {r['sender_name']} | ธนาคาร: {r['sender_bank']}\n"
+            f"เวลาโอน: {r['dateTime']}\n"
+            f"Ref: {r['referenceId']}\n"
+            f"ระบบจะส่งให้ admin ตรวจสอบอีกครั้ง\n"
+            f"SLIP_OCR_AMOUNT:{r['amount']}|SLIP_OCR_CONFIDENCE:1.0|SLIP_OCR_RAW:slip2go_verified|{transfer_stamp}"
+        )
+
     else:
         return f"Unknown tool: {name}"
 
@@ -1320,12 +1324,14 @@ SYSTEM_PROMPT = (
     "2. User asks about shipping costs/send package → MUST call shipping_fee_calculator.\n"
     "   - After getting tool result: display prices as bullet list (\"Kerry: 45 บาท\"), one line per courier.\n"
     "   - Last line ask ONCE only: \"เลือกขนส่งเจ้าไหนคะ?\" — no other offers, no double questions.\n"
-    "   - If info missing → ask short question in Thai for missing piece only.\n"
+    "   - If weight or province missing → ask short Thai question for missing info.\n"
+    "   - When asking for weight → ALSO ask: \"ขนาดกล่อง กว้าง x ยาว x สูง กี่ cm?\"\n"
     "3. User asks about order status/tracking → MUST call get_shipping_status. Then answer in Thai.\n"
     "4. Once courier picked → ask missing info in ONE short Thai message:\n"
-    "     \"รบกวนแจ้ง: ชื่อ-นามสกุลผู้ส่ง, เบอร์โทรผู้ส่ง, ที่อยู่คนส่ง, ชื่อผู้รับ, เบอร์โทรผู้รับ\"\n"
+    "     \"รบกวนแจ้ง: ชื่อ-นามสกุลผู้ส่ง, เบอร์โทรผู้ส่ง, เลขบัตรประชาชน/หนังสือเดินทาง, ตำบล+อำเภอ+จังหวัด+รหัสไปรษณีย์ผู้ส่ง, ชื่อผู้รับ, เบอร์โทรผู้รับ, ตำบล+อำเภอ+จังหวัด+รหัสไปรษณีย์ผู้รับ\"\n"
+    "   - Emphasize: \"ข้อมูลเลขบัตรฯ ใช้เพื่อยืนยันตัวตนเท่านั้น และจะอยู่ในคอมพิวเตอร์ของทางร้านเท่านั้น\"\n"
     "   - Never write English field names. Never ask one field at a time.\n"
-    "   - When ALL 5 fields provided → call generate_promptpay_qr with price from CURRENT STATE.\n"
+    "   - When ALL 7 fields provided → call generate_promptpay_qr with price from CURRENT STATE.\n"
     "5. After generate_promptpay_qr tool returns QR_CODE: data → you MUST paste the ENTIRE QR_CODE:...|AMOUNT:... string verbatim at the start of your response. Then add Thai payment instructions.\n"
     "6. User uploads payment slip → call verify_slip with image_base64 and expected_amount.\n"
     "   - If verify_slip returns verified=True → call create_shipping_order with all info plus slip data.\n"
@@ -1350,8 +1356,15 @@ def call_ollama(messages, stream=False, tools=None):
     req.add_header('Content-Type', 'application/json')
     if stream:
         return urllib.request.urlopen(req, timeout=300)
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        return json.loads(resp.read())
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body_text = ""
+        try: body_text = e.read().decode()[:500]
+        except: pass
+        print(f"[OLLAMA] HTTP {e.code}: {e.reason} body={body_text}", flush=True)
+        raise
 
 def run_tool_loop(messages, user_id=None, sess=None):
     """Run non-streaming tool-call loop. Returns updated messages."""

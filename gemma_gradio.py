@@ -11,9 +11,9 @@ import gradio as gr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tools_agent import (
-    SYSTEM_PROMPT, MODEL, TOOLS, NUM_CTX, execute_tool, set_pending_slip,
+    SYSTEM_PROMPT, MODEL, TOOLS, NUM_CTX, execute_tool, set_pending_slip, get_cached_qr,
 )
-from session_state import get_session, detect_courier, build_state_block, Stage, STAGE_TOOLS, advance_if_prices, needs_qr, parse_info_fields
+from session_state import get_session, save_session, detect_courier, build_state_block, Stage, STAGE_TOOLS, advance_if_prices, needs_qr, parse_info_fields, reset_session, is_reset_command, is_bulk_command, parse_multi_items
 
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_NATIVE = f"{OLLAMA_HOST}/api/chat"
@@ -151,9 +151,11 @@ def stream_ollama(messages, tools=None):
 
                 if tool_result and "QR_CODE:" in tool_result:
                     import re as _re
-                    m = _re.search(r'QR_CODE:([A-Za-z0-9+/=]+)', tool_result)
-                    if m:
-                        yield ("qr", m.group(1))
+                    amt_m = _re.search(r'AMOUNT:([\d.]+)', tool_result)
+                    if amt_m:
+                        qr = get_cached_qr(float(amt_m.group(1)))
+                        if qr:
+                            yield ("qr", qr)
 
                 messages.append({
                     "role": "tool",
@@ -215,6 +217,42 @@ def chat_fn(message, history, request: gr.Request | None = None):
             messages.append({"role": "user", "content": user_content})
             _log_conv(user_content, None)
 
+        # Reset command
+        if is_reset_command(user_text or ""):
+            sess_key = str(request.session_hash) if request and hasattr(request, 'session_hash') else 'gradio_default'
+            reset_session(sess_key)
+            yield "เริ่มรายการใหม่แล้วค่ะ ต้องการสอบถามอะไรคะ?"
+            return
+
+        # Bulk command: parse multi items and quote each
+        if is_bulk_command(user_text or ""):
+            items = parse_multi_items(user_text or "")
+            if items:
+                from tools_agent import compare_all_couriers, COURIER_NAMES, normalize_province
+                lines = []
+                for i, it in enumerate(items, 1):
+                    prov = normalize_province(it['province'])
+                    if not prov:
+                        lines.append(f"ชิ้นที่ {i}: ไมพบบจังหวัด '{it['province']}'")
+                        continue
+                    w = it['w_cm'] or 0; l = it['l_cm'] or 0; h = it['h_cm'] or 0
+                    results = compare_all_couriers(prov, it['weight_kg'], w, l, h)
+                    lines.append(f"ชิ้นที่ {i} ({prov} {it['weight_kg']}kg):")
+                    for r in results[:6]:
+                        if r.get('rejected'):
+                            lines.append(f"  {COURIER_NAMES.get(r['courier_code'], r['courier_code'])}: {r.get('reason', 'N/A')}")
+                        else:
+                            lines.append(f"  {COURIER_NAMES.get(r['courier_code'], r['courier_code'])}: {r['price']} บาท")
+                    lines.append("")
+                reply = '\n'.join(lines) + '\nเลือกขนส่งทีละรายการโดยพิมพ์ชื่อจังหวัดและน้ำหนักนะคะ'
+                yield reply
+            else:
+                yield ("ระบบยังไม่รองรับการคิดค่าส่งหลายชิ้นพร้อมกันนะคะ\n"
+                       "ลองพิมพ์แบบนี้:\n"
+                       "ชิ้น1: เชียงใหม่ 2kg 20x30x10\n"
+                       "ชิ้น2: กรุงเทพ 5kg 30x40x20")
+            return
+
         # State machine: detect courier choice, gate tools, inject state block
         sess = get_session(str(request.session_hash) if request and hasattr(request, 'session_hash') else 'gradio_default')
         # Detect courier + advance stage based on tool results
@@ -225,8 +263,10 @@ def chat_fn(message, history, request: gr.Request | None = None):
             if sess.stage == Stage.AWAIT_PICK:
                 sess.selected_courier = picked
                 sess.stage = Stage.COLLECT_INFO
+                save_session(str(request.session_hash) if request and hasattr(request, 'session_hash') else 'gradio_default', sess)
             elif sess.stage == Stage.COLLECT_INFO and picked != sess.selected_courier:
                 sess.selected_courier = picked  # re-pick
+                save_session(str(request.session_hash) if request and hasattr(request, 'session_hash') else 'gradio_default', sess)
 
         state_block = build_state_block(sess)
         print(f"[STATE] stage={sess.stage.name} courier={sess.selected_courier} prices={list(sess.quoted_prices.keys())} sender={sess.sender} receiver={sess.receiver} addr={sess.sender_addr}")
@@ -242,7 +282,7 @@ def chat_fn(message, history, request: gr.Request | None = None):
             result = execute_tool({"function": {"name": "generate_promptpay_qr", "arguments": {"amount": price}}})
             print(f"[FORCE-QR] result has QR_CODE={'QR_CODE:' in result}")
             if "QR_CODE:" in result:
-                b64 = result.split("QR_CODE:")[1].split("|")[0].strip()
+                b64 = get_cached_qr(price)
                 sess.stage = Stage.AWAIT_PAYMENT
                 _log_conv(None, f"QR_CODE generated ({price} THB)")
                 yield f"สแกนเพื่อชำระเงิน {price:.0f} บาท"

@@ -16,6 +16,7 @@ class Order(Base):
     delivery_province = Column(String, default='')
     receiver_name = Column(String, default='')
     receiver_phone = Column(String, default='')
+    receiver_address = Column(String, default='')
     weight_kg = Column(Float, default=0)
     courier_code = Column(String, default='')
     courier_name = Column(String, default='')
