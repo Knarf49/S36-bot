@@ -4,10 +4,14 @@ WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends tzdata libzbar0 fonts-dejavu-core && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir flask line-bot-sdk pillow qrcode[pil]
+COPY S36_bot/requirements-line.txt ./requirements-line.txt
+RUN pip install --no-cache-dir -r requirements-line.txt
 
 COPY tools_agent.py session_state.py .
 COPY S36_bot/line_bot.py .
+COPY S36_bot/image_utils.py .
+COPY S36_bot/validator.py .
+COPY S36_bot/geo_data/ ./geo_data/
 COPY promptpay_logo.jpg Thai_QR_Payment_Logo.png Mitr-Regular.ttf ./
 
 ENV TZ=Asia/Bangkok

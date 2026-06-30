@@ -24,8 +24,7 @@ services:
       - ORDER_API_URL=http://S36_bot-orders:8000
       - OLLAMA_HOST=${OLLAMA_HOST:-http://localhost:11434}
       - PROMPTPAY_PHONE=${PROMPTPAY_PHONE}
-      - TYPHOON_API_KEY=${TYPHOON_API_KEY}
-      - RECIPIENT_NAME=${RECIPIENT_NAME}
+      - SLIP2GO_API_KEY=${SLIP2GO_API_KEY}
       - TEST_MODE=${TEST_MODE:-0}
     restart: unless-stopped
 
@@ -35,15 +34,19 @@ services:
       dockerfile: S36_bot/Dockerfile.line
     container_name: S36_bot-line
     environment:
+      - PYTHONUNBUFFERED=1
       - TZ=Asia/Bangkok
       - LINE_CHANNEL_SECRET=${LINE_CHANNEL_SECRET}
       - LINE_CHANNEL_ACCESS_TOKEN=${LINE_CHANNEL_ACCESS_TOKEN}
       - OLLAMA_HOST=${OLLAMA_HOST:-http://localhost:11434}
       - ORDER_API_URL=http://S36_bot-orders:8000
       - PROMPTPAY_PHONE=${PROMPTPAY_PHONE}
-      - TYPHOON_API_KEY=${TYPHOON_API_KEY}
+      - SLIP2GO_API_KEY=${SLIP2GO_API_KEY}
       - TEST_MODE=${TEST_MODE:-0}
       - NGROK_DOMAIN=${NGROK_DOMAIN:-s36bot.ngrok-free.app}
+      - SESSIONS_DB=/app/data/sessions.db
+    volumes:
+      - order-data:/app/data
     restart: unless-stopped
 
   ngrok:
